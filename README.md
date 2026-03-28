@@ -12,26 +12,6 @@ A proof-of-concept operating system targeting ARM64. The bootloader is written i
 
 ---
 
-## Architecture Overview
-
-```
-┌─────────────────────────────────────────────┐
-│              User Space                     │
-│   ELF processes, syscall interface          │
-├─────────────────────────────────────────────┤
-│              Kernel Space                   │
-│   Scheduler │ MM │ VFS │ Drivers │ IPC      │
-├─────────────────────────────────────────────┤
-│              Hardware Abstraction           │
-│   UART │ Timer │ Interrupt Controller       │
-├─────────────────────────────────────────────┤
-│              Bootloader (ASM)               │
-│   ARM64 startup, MMU init, stack setup      │
-└─────────────────────────────────────────────┘
-```
-
----
-
 ## Component Requirements
 
 ### 1. Bootloader (ARM64 Assembly)
