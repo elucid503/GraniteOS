@@ -1,0 +1,39 @@
+// kernel/uart.zig — PL011 UART driver (polling) at 0x09000000 (QEMU virt)
+
+const UART_BASE: usize = 0x09000000;
+
+const data_register = @as(*volatile u32, @ptrFromInt(UART_BASE + 0x000));
+const flag_register = @as(*volatile u32, @ptrFromInt(UART_BASE + 0x018));
+const baud_int_divisor = @as(*volatile u32, @ptrFromInt(UART_BASE + 0x024));
+const baud_frac_divisor = @as(*volatile u32, @ptrFromInt(UART_BASE + 0x028));
+const line_control = @as(*volatile u32, @ptrFromInt(UART_BASE + 0x02C));
+const control = @as(*volatile u32, @ptrFromInt(UART_BASE + 0x030));
+
+const tx_fifo_full: u32 = 1 << 5; // Flag register bit 5
+
+// Configures for 38400 8N1: 24MHz clock, IBRD=39, FBRD=4 (24M / (16 * 38400))
+
+pub fn init() void {
+
+    control.* = 0; // Disable UART before reconfiguring
+    baud_int_divisor.* = 39;
+    baud_frac_divisor.* = 4;
+    line_control.* = 0b11 << 5; // WLEN=0b11 -> 8-bit words, FIFO disabled
+    control.* = (1 << 0) | (1 << 8) | (1 << 9); // Enable UART, TX, RX
+
+}
+
+pub fn putchar(c: u8) void {
+
+    while (flag_register.* & tx_fifo_full != 0) {} // Spin until TX FIFO has space
+    data_register.* = c;
+
+}
+
+pub fn print(s: []const u8) void {
+
+    for (s) |c| {
+        putchar(c);
+    }
+
+}
