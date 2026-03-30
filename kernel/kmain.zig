@@ -1,9 +1,9 @@
 // kernel/kmain.zig — Kernel entry point (EL1, MMU off)
 
-const uart       = @import("drivers/uart.zig");
-const gic        = @import("drivers/gic.zig");
-const timer      = @import("scheduler/timer.zig");
-const scheduler  = @import("scheduler/scheduler.zig");
+const uart = @import("drivers/uart.zig");
+const gic = @import("drivers/gic.zig");
+const timer = @import("scheduler/timer.zig");
+const scheduler = @import("scheduler/scheduler.zig");
 const exceptions = @import("exceptions/exceptions.zig");
 
 export fn kmain() noreturn {
