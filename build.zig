@@ -14,18 +14,25 @@ pub fn build(b: *std.Build) void {
 
     const optimize = b.standardOptimizeOption(.{});
 
-    const kernel = b.addExecutable(.{
+    const kernel_module = b.createModule(.{
 
-        .name             = "kernel",
         .root_source_file = b.path("kernel/kmain.zig"),
         .target           = target,
         .optimize         = optimize,
+        .single_threaded  = true,
+
+    });
+
+    kernel_module.addAssemblyFile(b.path("boot/start.S"));
+
+    const kernel = b.addExecutable(.{
+
+        .name        = "kernel",
+        .root_module = kernel_module,
 
     });
 
     kernel.setLinkerScript(b.path("boot/linker.ld"));
-    kernel.addAssemblyFile(b.path("boot/start.S"));
-    kernel.root_module.single_threaded = true;
 
     b.installArtifact(kernel);
 
