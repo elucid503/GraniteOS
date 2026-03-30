@@ -1,4 +1,4 @@
-// kernel/uart.zig — PL011 UART driver (polling) at 0x09000000 (QEMU virt)
+// kernel/drivers/uart.zig — PL011 UART driver (polling) at 0x09000000 (QEMU virt)
 
 const UART_BASE: usize = 0x09000000;
 
@@ -33,7 +33,31 @@ pub fn putchar(c: u8) void {
 pub fn print(s: []const u8) void {
 
     for (s) |c| {
+
         putchar(c);
+
+    }
+
+}
+
+pub fn print_hex(value: u64) void {
+
+    const digits = "0123456789abcdef";
+
+    putchar('0');
+    putchar('x');
+
+    var shift: u7 = 60;
+
+    while (true) {
+
+        const nibble: u4 = @truncate(value >> @as(u6, @intCast(shift)));
+
+        putchar(digits[nibble]);
+
+        if (shift == 0) break;
+        shift -= 4;
+
     }
 
 }

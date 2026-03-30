@@ -11,6 +11,8 @@ SECTIONS {
     .text : {
 
         KEEP(*(.text.boot))
+        . = ALIGN(0x800);
+        *(.text.vectors)
         *(.text .text.*)
 
     }

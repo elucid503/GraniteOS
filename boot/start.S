@@ -63,6 +63,17 @@ _start:
 
 .Lbss_done:
 
+    // Enable FP/SIMD (CPACR_EL1.FPEN = 0b11) — Zig may emit NEON instructions
+
+    mov     x0, #(3 << 20)
+    msr     cpacr_el1, x0
+
+    // Install exception vector table (VBAR_EL1)
+
+    ldr     x0, =exception_vectors
+    msr     vbar_el1, x0
+    isb
+
     bl      kmain
 
 

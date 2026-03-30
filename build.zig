@@ -24,6 +24,7 @@ pub fn build(b: *std.Build) void {
     });
 
     kernel_module.addAssemblyFile(b.path("boot/start.S"));
+    kernel_module.addAssemblyFile(b.path("boot/vectors.S"));
 
     const kernel = b.addExecutable(.{
 
