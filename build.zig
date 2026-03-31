@@ -45,7 +45,8 @@ pub fn build(b: *std.Build) void {
         "-machine", "virt",
         "-cpu",     "cortex-a57",
         "-m",       "256M",
-        "-nographic",
+        "-display", "none",
+        "-serial",  "stdio",
         "-kernel",  "zig-out/bin/kernel",
 
     };

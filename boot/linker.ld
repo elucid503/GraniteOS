@@ -48,6 +48,10 @@ SECTIONS {
     . += 64K;
     __stack_top = .;
 
+    /* End of all kernel image data; physical allocator uses memory above this */
+
+    __kernel_end = .;
+
     /DISCARD/ : {
 
         *(.comment)

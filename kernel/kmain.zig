@@ -1,10 +1,15 @@
-// kernel/kmain.zig — Kernel entry point (EL1, MMU off)
+// kernel/kmain.zig — Kernel entry point (EL1, MMU on via identity map)
 
 const uart = @import("drivers/uart.zig");
 const gic = @import("drivers/gic.zig");
+
 const timer = @import("scheduler/timer.zig");
 const scheduler = @import("scheduler/scheduler.zig");
+
 const exceptions = @import("exceptions/exceptions.zig");
+
+const physical_allocator = @import("memory/physical_allocator.zig");
+const heap = @import("memory/heap.zig");
 
 export fn kmain() noreturn {
 
@@ -13,6 +18,16 @@ export fn kmain() noreturn {
     uart.print("Welcome to GraniteOS!\r\n");
 
     uart.print("\r\n");
+
+    uart.print("MMU ......... Enabled (identity map)\r\n");
+
+    physical_allocator.init(); // Initialize physical page allocator
+
+    uart.print("Physical Memory ......... Initialized\r\n");
+
+    heap.init(16); // Initialize kernel heap with 16 pages (64KB)
+
+    uart.print("Kernel Heap ......... Initialized\r\n");
 
     gic.init(); // Initialize GIC
 
