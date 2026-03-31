@@ -1,4 +1,4 @@
-// kernel/scheduler/timer.zig — ARM Generic Timer (EL1 physical timer)
+// kernel/scheduler/timer.zig - ARM Generic Timer (EL1 physical timer)
 
 pub const INTERRUPT_ID: u32 = 30; // Physical private pripheral interrupt (PPI) for the EL1 physical timer
 

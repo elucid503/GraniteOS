@@ -1,4 +1,4 @@
-/* boot/linker.ld — GraniteOS kernel linker script (loads at 0x40000000, MMU off, physical == virtual) */
+/* boot/linker.ld - GraniteOS kernel linker script (loads at 0x40000000, MMU off, physical == virtual) */
 
 ENTRY(_start)
 

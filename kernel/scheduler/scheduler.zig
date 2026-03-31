@@ -1,4 +1,4 @@
-// kernel/scheduler/scheduler.zig — Internal round-robin task scheduler (kernel-only)
+// kernel/scheduler/scheduler.zig - Internal round-robin task scheduler (kernel-only)
 
 const uart = @import("../drivers/uart.zig");
 
@@ -27,7 +27,7 @@ var task_stacks: [MAX_TASKS - 1][STACK_SIZE]u8 align(16) = undefined;
 pub fn init() void {
 
     // Task 0 is the idle task (kmain). It's already running on the boot
-    // stack — its SP will be saved when the first timer IRQ fires.
+    // stack - its SP will be saved when the first timer IRQ fires.
 
     tasks[0] = .{ .stack_pointer = 0, .state = .running };
     task_count = 1;

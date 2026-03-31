@@ -8,7 +8,7 @@ A proof-of-concept operating system targeting ARM64. The bootloader is written i
 
 - Minimal, readable, well-structured code
 - Sufficient to boot, run user processes, and demonstrate core OS concepts
-- No unnecessary abstractions — complexity is added only when required
+- No unnecessary abstractions - complexity is added only when required
 
 ---
 
@@ -35,7 +35,7 @@ A proof-of-concept operating system targeting ARM64. The bootloader is written i
 
 - Identity-map physical memory during boot so early kernel code can run before the full page tables are ready
 - Set up a kernel page table using 4KB pages across a 48-bit virtual address space
-- Separate kernel and user address spaces: kernel lives at the top of the address space (high addresses), user processes at the bottom (low addresses). ARM64 uses two page table registers — one for each half — so the split is hardware-enforced with no overlap
+- Separate kernel and user address spaces: kernel lives at the top of the address space (high addresses), user processes at the bottom (low addresses). ARM64 uses two page table registers - one for each half - so the split is hardware-enforced with no overlap
 - Page fault handler to catch invalid memory accesses and panic cleanly rather than silently corrupting state
 
 **Physical Allocator**
@@ -54,9 +54,9 @@ A proof-of-concept operating system targeting ARM64. The bootloader is written i
 ### 3. Interrupts and Exceptions
 
 - Set up the ARM64 exception vector table (`VBAR_EL1`)
-- Handle the four exception classes: synchronous, IRQ, FIQ, SError — for both EL0 and EL1
+- Handle the four exception classes: synchronous, IRQ, FIQ, SError - for both EL0 and EL1
 - Configure the GIC (Generic Interrupt Controller) for QEMU's `virt` machine
-- Timer interrupt via ARM generic timer (`CNTP_CTL_EL0`) — drives the scheduler
+- Timer interrupt via ARM generic timer (`CNTP_CTL_EL0`) - drives the scheduler
 - Syscall entry via `svc #0` (synchronous exception from EL0)
 
 ---
@@ -69,22 +69,22 @@ Round Robin is the right call for a PoC. It is simple, fair, and trivially corre
 
 **Process Control Block (PCB)**
 
-Each process has a PCB — a kernel-side record of everything needed to pause and resume it. It holds:
+Each process has a PCB - a kernel-side record of everything needed to pause and resume it. It holds:
 
-- **Process ID** — unique numeric identifier for this process
-- **State** — one of: Ready (waiting for CPU), Running (currently executing), Blocked (waiting on I/O or a lock), or Zombie (exited but not yet cleaned up by parent)
-- **General-purpose registers** — the 31 CPU registers (x0–x30) saved when the process is preempted
-- **Stack pointer** — the user-space stack position at the time of preemption
-- **Program counter** — where to resume execution
-- **Processor state** — CPU flags and mode bits (condition codes, interrupt mask, etc.)
-- **Page table pointer** — the process's own virtual memory map, swapped in on every context switch
-- **Kernel stack pointer** — a separate stack used while handling syscalls and exceptions on behalf of this process
-- **Parent PID** — which process spawned this one (needed for `wait`/`exit`)
-- **Exit code** — the value passed to `exit()`, held until the parent reads it
+- **Process ID** - unique numeric identifier for this process
+- **State** - one of: Ready (waiting for CPU), Running (currently executing), Blocked (waiting on I/O or a lock), or Zombie (exited but not yet cleaned up by parent)
+- **General-purpose registers** - the 31 CPU registers (x0–x30) saved when the process is preempted
+- **Stack pointer** - the user-space stack position at the time of preemption
+- **Program counter** - where to resume execution
+- **Processor state** - CPU flags and mode bits (condition codes, interrupt mask, etc.)
+- **Page table pointer** - the process's own virtual memory map, swapped in on every context switch
+- **Kernel stack pointer** - a separate stack used while handling syscalls and exceptions on behalf of this process
+- **Parent PID** - which process spawned this one (needed for `wait`/`exit`)
+- **Exit code** - the value passed to `exit()`, held until the parent reads it
 
 **Context Switch**
 
-- When the timer fires: save the current process's CPU registers into its PCB, select the next process from the queue, restore its registers, and return — from that process's perspective, it never stopped
+- When the timer fires: save the current process's CPU registers into its PCB, select the next process from the queue, restore its registers, and return - from that process's perspective, it never stopped
 - The user-space page table must be swapped on every context switch so each process sees only its own memory
 - After swapping the page table, the CPU's translation cache (TLB) must be flushed, otherwise stale address mappings from the previous process will linger and cause incorrect memory accesses
 
@@ -97,7 +97,7 @@ Each process has a PCB — a kernel-side record of everything needed to pause an
 
 ### 5. System Calls
 
-The syscall calling convention mirrors Linux on AArch64 — this means standard toolchains and libc ports work without modification. When a process issues a syscall, it places the syscall number in register `x8`, up to six arguments in `x0` through `x5`, and reads the return value back from `x0` after the kernel returns.
+The syscall calling convention mirrors Linux on AArch64 - this means standard toolchains and libc ports work without modification. When a process issues a syscall, it places the syscall number in register `x8`, up to six arguments in `x0` through `x5`, and reads the return value back from `x0` after the kernel returns.
 
 **Required syscalls to support user binaries:**
 
@@ -131,10 +131,10 @@ To support running custom binaries:
 
 **ELF Loader steps:**
 
-1. Read and validate the ELF header — check the magic bytes, confirm it's a 64-bit ARM binary, and extract the entry point address
+1. Read and validate the ELF header - check the magic bytes, confirm it's a 64-bit ARM binary, and extract the entry point address
 2. For each loadable segment: allocate fresh pages, copy the segment data in, and apply the correct permissions (read, write, or execute)
 3. Allocate and map a user stack at a fixed high address, growing downward
-4. Set up the initial stack frame with argc, argv, and envp — these can be empty or zeroed for a PoC
+4. Set up the initial stack frame with argc, argv, and envp - these can be empty or zeroed for a PoC
 5. Return to user space at the entry point via `eret`
 
 ---
@@ -156,7 +156,7 @@ Later, add a real disk-backed filesystem (e.g. FAT32 or a custom format) once Vi
 
 - User processes run at privilege level EL0 (unprivileged); the kernel runs at EL1
 - Entering the kernel happens via `svc #0` for syscalls, or automatically on any exception or interrupt
-- Returning to user space uses the `eret` instruction, which atomically restores the saved program counter and processor state — there is no way for user code to fake this
+- Returning to user space uses the `eret` instruction, which atomically restores the saved program counter and processor state - there is no way for user code to fake this
 - Each process has its own dedicated kernel stack, used only while the kernel is handling an exception or syscall on that process's behalf
 - The hardware maintains two separate stack pointers: one for user space (EL0) and one for the kernel (EL1), so they never interfere
 
@@ -191,7 +191,7 @@ For a PoC, start single-core. Multicore adds significant complexity:
 - Each core needs its own exception vectors, stack, and GIC CPU interface
 - The scheduler needs a run queue per core plus work-stealing or migration
 - All shared kernel data structures need spinlocks (`ldaxr`/`stlxr` on ARM64)
-- Memory ordering: ARM64 is weakly ordered — `dmb`, `dsb`, `isb` barriers required at correct points
+- Memory ordering: ARM64 is weakly ordered - `dmb`, `dsb`, `isb` barriers required at correct points
 
 **Recommended approach:** bring up a second core only after the single-core kernel is stable. Use `PSCI` (via QEMU) to bring secondary cores online.
 
@@ -206,7 +206,7 @@ A minimal shell is sufficient for a PoC:
 - `fork` + `exec` on Enter: look up binary in ramfs, load and run it
 - Built-ins: `help`, `ls`, `clear`, `exit`
 
-No job control, no pipes in the shell (even if kernel supports them) — keep it minimal.
+No job control, no pipes in the shell (even if kernel supports them) - keep it minimal.
 
 ---
 
@@ -328,5 +328,5 @@ Or let Zig drive the whole build (including the `.S` file) via `build.zig`.
 - **Kernel debugging:** QEMU's `-s -S` flags expose a GDB stub. Use `gdb-multiarch` with an AArch64 target. Set this up before writing any real code.
 - **UART early panic:** A `panic()` function that prints to UART and halts is the single most useful debugging tool in early kernel development.
 - **Stack overflow detection:** Place a guard page (unmapped) below each kernel stack. A stack overflow becomes a clean page fault rather than silent corruption.
-- **KASLR / security:** Not relevant for a PoC — skip entirely.
+- **KASLR / security:** Not relevant for a PoC - skip entirely.
 - **SMP-safe allocators:** Not needed until M10.

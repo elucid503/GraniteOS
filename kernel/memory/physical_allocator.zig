@@ -1,11 +1,11 @@
-// kernel/memory/physical_allocator.zig — Bitmap physical page allocator over available RAM
+// kernel/memory/physical_allocator.zig - Bitmap physical page allocator over available RAM
 
 const PAGE_SIZE: usize = 4096;
 const RAM_BASE: usize = 0x4000_0000;
 const RAM_END: usize = 0x5000_0000; // 256MB at 0x40000000
 const TOTAL_PAGES: usize = (RAM_END - RAM_BASE) / PAGE_SIZE; // 65536
 
-// Provided by linker.ld — first address not occupied by the kernel image + stack
+// Provided by linker.ld - first address not occupied by the kernel image + stack
 extern const __kernel_end: u8;
 
 // One bit per physical page: 1 = used, 0 = free

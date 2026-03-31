@@ -1,4 +1,4 @@
-// kernel/kmain.zig — Kernel entry point (EL1, MMU on via identity map)
+// kernel/kmain.zig - Kernel entry point (EL1, MMU on via identity map)
 
 const uart = @import("drivers/uart.zig");
 const gic = @import("drivers/gic.zig");
@@ -48,7 +48,7 @@ export fn kmain() noreturn {
 
     exceptions.enable_interrupts(); // Enable interrupts globally
 
-    // Idle loop — the scheduler preempts this to run other tasks
+    // Idle loop - the scheduler preempts this to run other tasks
 
     while (true) {
 

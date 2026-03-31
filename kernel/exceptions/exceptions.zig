@@ -1,4 +1,4 @@
-// kernel/exceptions/exceptions.zig — Exception handlers (called from boot/vectors.S)
+// kernel/exceptions/exceptions.zig - Exception handlers (called from boot/vectors.S)
 
 const uart = @import("../drivers/uart.zig");
 const gic = @import("../drivers/gic.zig");
@@ -28,7 +28,7 @@ export fn handle_irq(saved_sp: u64) u64 {
 
     }
 
-    if (interrupt_id < 1020) { // Not a trusted interrupt ID — spurious or CPU-local
+    if (interrupt_id < 1020) { // Not a trusted interrupt ID - spurious or CPU-local
 
         gic.end_of_interrupt(interrupt_id);
 
@@ -38,7 +38,7 @@ export fn handle_irq(saved_sp: u64) u64 {
 
 }
 
-// Catch-all for unhandled exceptions — identifies page faults, prints diagnostics, and halts.
+// Catch-all for unhandled exceptions - identifies page faults, prints diagnostics, and halts.
 export fn handle_unhandled(exception_syndrome: u64, faulting_address: u64) noreturn {
 
     const ec = (exception_syndrome >> 26) & 0x3F; // Exception Class field in ESR_EL1[31:26]

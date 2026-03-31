@@ -1,4 +1,4 @@
-// boot/vectors.S — ARM64 exception vector table
+// boot/vectors.S - ARM64 exception vector table
 
 // 16 entries (4 exception types × 4 source contexts), each 128 bytes.
 // Table is 2KB aligned.
@@ -16,7 +16,7 @@
 
 exception_vectors:
 
-// Current EL, SP_EL0 (unused — we always use SP_ELx)
+// Current EL, SP_EL0 (unused - we always use SP_ELx)
 
 .balign 0x80
     b       _unhandled
@@ -32,13 +32,13 @@ exception_vectors:
 .balign 0x80
     b       _unhandled              // Synchronous
 .balign 0x80
-    b       _irq                    // IRQ — timer fires here
+    b       _irq                    // IRQ - timer fires here
 .balign 0x80
     b       _unhandled              // FIQ
 .balign 0x80
     b       _unhandled              // SError
 
-// Lower EL, AArch64 (user-space — future milestones)
+// Lower EL, AArch64 (user-space - future milestones)
 
 .balign 0x80
     b       _unhandled

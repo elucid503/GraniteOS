@@ -1,4 +1,4 @@
-// kernel/drivers/uart.zig — PL011 UART driver (polling) at 0x09000000 (QEMU virt)
+// kernel/drivers/uart.zig - PL011 UART driver (polling) at 0x09000000 (QEMU virt)
 
 const UART_BASE: usize = 0x09000000;
 

@@ -1,4 +1,4 @@
-// build.zig — GraniteOS: zig build | zig build qemu | zig build qemu-debug
+// build.zig - GraniteOS: zig build | zig build qemu | zig build qemu-debug
 
 const std = @import("std");
 

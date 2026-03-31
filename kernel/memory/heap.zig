@@ -1,4 +1,4 @@
-// kernel/memory/heap.zig — Kernel bump allocator backed by physical pages
+// kernel/memory/heap.zig - Kernel bump allocator backed by physical pages
 
 const physical_allocator = @import("physical_allocator.zig");
 

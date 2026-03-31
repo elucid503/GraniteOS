@@ -1,4 +1,4 @@
-// kernel/drivers/gic.zig — GICv2 driver (QEMU virt: distributor 0x0800_0000, CPU interface 0x0801_0000)
+// kernel/drivers/gic.zig - GICv2 driver (QEMU virt: distributor 0x0800_0000, CPU interface 0x0801_0000)
 
 const distributor_control = @as(*volatile u32, @ptrFromInt(0x0800_0000 + 0x000));
 const distributor_set_enable = @as(*volatile u32, @ptrFromInt(0x0800_0000 + 0x100));
