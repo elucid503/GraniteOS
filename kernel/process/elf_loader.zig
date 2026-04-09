@@ -118,10 +118,14 @@ fn load_segment(elf_bytes: []const u8, ph: *align(1) const ProgramHeader, l0_pa:
     const page_end   = align_up(va_end, PAGE_SIZE);
 
     // Allocate physical pages and map them at the segment's virtual addresses.
+    // Skip pages already mapped by a previous segment (e.g. .text and .rodata
+    // in the same 4KB page from separate PT_LOAD entries).
     var va = page_start;
     while (va < page_end) : (va += PAGE_SIZE) {
-        const pa = physical_allocator.alloc_page() orelse return LoadError.OutOfMemory;
-        if (!page_table.map_page(l0_pa, va, pa)) return LoadError.OutOfMemory;
+        if (!page_table.is_page_mapped(l0_pa, va)) {
+            const pa = physical_allocator.alloc_page() orelse return LoadError.OutOfMemory;
+            if (!page_table.map_page(l0_pa, va, pa)) return LoadError.OutOfMemory;
+        }
     }
 
     // ISB ensures the new TLB entries (from map_page DSB) are visible before we write.

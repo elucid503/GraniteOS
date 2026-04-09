@@ -136,7 +136,9 @@ pub fn clone(src_l0_pa: usize) Error!usize {
             const src_entry = src_l3[l3i];
             if (src_entry & 0x1 == 0) continue;
 
-            const src_phys: usize = @intCast(src_entry & ~@as(u64, PAGE_SIZE - 1));
+            // Use the 48-bit PA mask: bits[47:12] only.  The naive ~0xFFF mask
+            // leaves upper attribute bits (e.g. PXN at bit 53) in the address.
+            const src_phys: usize = @intCast(src_entry & 0x0000_FFFF_FFFF_F000);
 
             const dst_phys = physical_allocator.alloc_page() orelse return Error.OutOfMemory;
             const src_bytes: [*]const u8 = @ptrFromInt(src_phys);
@@ -172,7 +174,7 @@ pub fn free_user_mappings(l0_pa: usize) void {
         for (0..512) |l3i| {
             const entry = l3_tbl[l3i];
             if (entry & 0x1 == 0) continue;
-            physical_allocator.free_page(@intCast(entry & ~@as(u64, PAGE_SIZE - 1)));
+            physical_allocator.free_page(@intCast(entry & 0x0000_FFFF_FFFF_F000));
         }
 
         physical_allocator.free_page(l3_pa);
@@ -214,6 +216,21 @@ pub fn switch_to(l0_pa: usize) void {
         : [ttbr] "r" (l0_pa),
         : .{ .memory = true }
     );
+
+}
+
+/// Check whether a 4KB virtual page is already mapped in the given page table.
+/// Returns true if the L3 entry for va exists and is valid.
+pub fn is_page_mapped(l0_pa: usize, va: usize) bool {
+
+    const l1_pa = descend(l0_pa, (va >> 39) & 0x1FF, false) orelse return false;
+    const l2_pa = descend(l1_pa, (va >> 30) & 0x1FF, false) orelse return false;
+    const l2_tbl: [*]u64 = @ptrFromInt(l2_pa);
+    const l2_idx = (va >> 21) & 0x1FF;
+
+    const l3_pa = table_pa(l2_tbl[l2_idx]) orelse return false;
+    const l3_tbl: [*]u64 = @ptrFromInt(l3_pa);
+    return l3_tbl[(va >> 12) & 0x1FF] & 0x1 != 0;
 
 }
 

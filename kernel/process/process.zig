@@ -38,11 +38,9 @@ pub fn spawn_elf(elf_bytes: []const u8) void {
         return;
     };
 
-    uart.print("DBG: switching to process table\r\n");
     // Temporarily activate this process's page table so ELF data can be written to
     // user VAs during loading. Kernel code (0x40000000) is mapped in all tables.
     page_table_mod.switch_to(l0);
-    uart.print("DBG: switched, loading ELF\r\n");
 
     const result = elf_loader.load(elf_bytes, l0) catch |err| {
         page_table_mod.switch_to(page_table_mod.boot_root());
@@ -53,12 +51,8 @@ pub fn spawn_elf(elf_bytes: []const u8) void {
         return;
     };
 
-    uart.print("DBG: ELF loaded, restoring boot table\r\n");
-
     // Restore the boot page table before returning to kmain.
     page_table_mod.switch_to(page_table_mod.boot_root());
-
-    uart.print("DBG: boot table restored\r\n");
 
     scheduler.spawn_user_task(result.entry_point, result.stack_top, result.initial_brk, l0);
 

@@ -13,6 +13,26 @@ pub fn println(s: []const u8) void {
     print("\r\n");
 }
 
+/// Write a 64-bit value as lowercase hex (no leading zeros, no prefix).
+pub fn print_hex(value: u64) void {
+
+    const digits = "0123456789abcdef";
+    if (value == 0) {
+        print("0");
+        return;
+    }
+    var buf: [16]u8 = undefined;
+    var pos: usize = buf.len;
+    var v = value;
+    while (v > 0) {
+        pos -= 1;
+        buf[pos] = digits[@intCast(v & 0xF)];
+        v >>= 4;
+    }
+    print(buf[pos..]);
+
+}
+
 /// Write a single decimal integer to stdout.
 pub fn print_int(value: usize) void {
 

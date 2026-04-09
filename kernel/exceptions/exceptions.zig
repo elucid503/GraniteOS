@@ -25,7 +25,6 @@ export fn handle_irq(saved_sp: u64) u64 {
     if (interrupt_id == timer.INTERRUPT_ID) {
 
         timer.reset();
-        uart.print("T");
 
         const new_sp = scheduler.tick(saved_sp);
 
