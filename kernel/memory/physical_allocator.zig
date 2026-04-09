@@ -54,6 +54,22 @@ pub fn alloc_page() ?usize {
 
 }
 
+/// Allocate the specific page at addr. Returns addr on success, null if out of range or already used.
+pub fn alloc_page_at(addr: usize) ?usize {
+
+    if (addr < RAM_BASE or addr >= RAM_END) return null;
+
+    const i   = (addr - RAM_BASE) / PAGE_SIZE;
+    const bit: u8 = @as(u8, 1) << @as(u3, @intCast(i % 8));
+
+    if (bitmap[i / 8] & bit != 0) return null; // already allocated
+
+    bitmap[i / 8] |= bit;
+    free_page_count -= 1;
+    return addr;
+
+}
+
 /// Return a previously allocated page to the free pool.
 pub fn free_page(page_addr: usize) void {
 

@@ -7,7 +7,7 @@
 //   [sp, #0]...[sp, #240]  x0–x30
 //   [sp, #248]             ELR_EL1 (return address)
 //   [sp, #256]             SPSR_EL1 (saved processor state)
-//   [sp, #264]             padding
+//   [sp, #264]             SP_EL0 (user stack pointer; 0 for EL1 tasks)
 
 .section .text.vectors, "ax"
 .balign 0x800 // alignment
@@ -38,16 +38,16 @@ exception_vectors:
 .balign 0x80
     b       _unhandled              // SError
 
-// Lower EL, AArch64 (user-space - future milestones)
+// Lower EL, AArch64 (user-space EL0)
 
 .balign 0x80
-    b       _unhandled
+    b       _el0_sync               // Synchronous - SVC syscall entry
 .balign 0x80
-    b       _unhandled
+    b       _el0_irq                // IRQ - timer preempts user task
 .balign 0x80
-    b       _unhandled
+    b       _unhandled              // FIQ
 .balign 0x80
-    b       _unhandled
+    b       _unhandled              // SError
 
 // Lower EL, AArch32 (unsupported)
 
@@ -59,6 +59,9 @@ exception_vectors:
     b       _unhandled
 .balign 0x80
     b       _unhandled
+
+// save_regs: allocate a 272-byte frame and save all caller/callee registers,
+// ELR_EL1, SPSR_EL1, and SP_EL0 (user stack; 0 for EL1 tasks).
 
 .macro save_regs
     sub     sp, sp, #272
@@ -80,10 +83,17 @@ exception_vectors:
     str     x30,       [sp, #240]
     mrs     x0, elr_el1
     mrs     x1, spsr_el1
+    mrs     x2, sp_el0
     stp     x0,  x1,  [sp, #248]
+    str     x2,        [sp, #264]
 .endm
 
+// restore_regs: restore SP_EL0 first, then all registers, then pop the frame.
+// SP_EL0 must be restored before eret so the CPU has the right user stack.
+
 .macro restore_regs
+    ldr     x2,        [sp, #264]
+    msr     sp_el0, x2
     ldp     x0,  x1,  [sp, #248]
     msr     elr_el1, x0
     msr     spsr_el1, x1
@@ -106,6 +116,8 @@ exception_vectors:
     add     sp, sp, #272
 .endm
 
+// EL1 IRQ: timer or device interrupt while kernel is running.
+
 _irq:
 
     save_regs
@@ -117,6 +129,49 @@ _irq:
     restore_regs
 
     eret
+
+// EL0 IRQ: timer interrupt preempts a user-space task.
+// Identical body to _irq - hardware routes here from a different vector entry.
+
+_el0_irq:
+
+    save_regs
+
+    mov     x0, sp
+    bl      handle_irq
+
+    mov     sp, x0
+    restore_regs
+
+    eret
+
+// EL0 synchronous: svc #0 syscall from user space, or fault (abort, alignment, etc.)
+// Read ESR_EL1.EC to distinguish SVC (0x15) from aborts before dispatching.
+
+_el0_sync:
+
+    save_regs
+
+    mrs     x9,  esr_el1
+    lsr     x9,  x9,  #26          // EC = ESR[31:26]
+    and     x9,  x9,  #0x3F
+    cmp     x9,  #0x15             // SVC instruction executed in AArch64 state
+    bne     .Lel0_fault            // anything else → fault handler
+
+    mov     x0, sp
+    bl      handle_syscall          // Zig handler; returns new (or same) SP in x0
+
+    mov     sp, x0
+    restore_regs
+    eret
+
+.Lel0_fault:
+
+    // Non-SVC EL0 sync exception (data abort, instruction abort, etc.)
+    mrs     x0, esr_el1
+    mrs     x1, elr_el1
+    bl      handle_unhandled        // noreturn
+    b       .
 
 _unhandled:
 

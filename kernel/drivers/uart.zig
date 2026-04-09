@@ -40,6 +40,17 @@ pub fn print(s: []const u8) void {
 
 }
 
+/// Return one character from the RX FIFO, or null if none is waiting.
+pub fn getchar() ?u8 {
+
+    const rx_fifo_empty: u32 = 1 << 4; // Flag register RXFE bit
+
+    if (flag_register.* & rx_fifo_empty != 0) return null;
+
+    return @truncate(data_register.*);
+
+}
+
 pub fn print_hex(value: u64) void {
 
     const digits = "0123456789abcdef";

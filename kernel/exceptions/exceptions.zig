@@ -1,17 +1,23 @@
-// kernel/exceptions/exceptions.zig - Exception handlers (called from boot/vectors.S)
+// kernel/exceptions/exceptions.zig - EL1 exception handlers (called from boot/vectors.S)
 
 const uart = @import("../drivers/uart.zig");
 const gic = @import("../drivers/gic.zig");
 const timer = @import("../scheduler/timer.zig");
 const scheduler = @import("../scheduler/scheduler.zig");
+const syscall = @import("../syscall/syscall.zig");
+
+// Force syscall module into the compilation so handle_syscall is linked.
+comptime {
+    _ = syscall.handle_syscall;
+}
 
 pub fn enable_interrupts() void {
 
-    asm volatile ("msr daifclr, #0x2"); // Unmasks IRQ exceptions by clearing the I bit in DAIF
+    asm volatile ("msr daifclr, #0x2"); // Unmask IRQ by clearing the I bit in DAIF
 
 }
 
-// Timer / device IRQ: acknowledge, handle, return (possibly different) SP.
+/// Timer / device IRQ from EL1 or EL0. Acknowledge, tick the scheduler, return new SP.
 export fn handle_irq(saved_sp: u64) u64 {
 
     const interrupt_id = gic.acknowledge();
@@ -19,6 +25,7 @@ export fn handle_irq(saved_sp: u64) u64 {
     if (interrupt_id == timer.INTERRUPT_ID) {
 
         timer.reset();
+        uart.print("T");
 
         const new_sp = scheduler.tick(saved_sp);
 
@@ -28,7 +35,7 @@ export fn handle_irq(saved_sp: u64) u64 {
 
     }
 
-    if (interrupt_id < 1020) { // Not a trusted interrupt ID - spurious or CPU-local
+    if (interrupt_id < 1020) {
 
         gic.end_of_interrupt(interrupt_id);
 
@@ -38,17 +45,16 @@ export fn handle_irq(saved_sp: u64) u64 {
 
 }
 
-// Catch-all for unhandled exceptions - identifies page faults, prints diagnostics, and halts.
+/// Catch-all for unhandled exceptions: print diagnostics and halt.
 export fn handle_unhandled(exception_syndrome: u64, faulting_address: u64) noreturn {
 
-    const ec = (exception_syndrome >> 26) & 0x3F; // Exception Class field in ESR_EL1[31:26]
+    const ec = (exception_syndrome >> 26) & 0x3F;
 
-    // EC 0x20/0x21 = instruction abort (lower/current EL); 0x24/0x25 = data abort
+    // EC 0x20/0x21 = instruction abort; 0x24/0x25 = data abort
     const is_page_fault = (ec == 0x20 or ec == 0x21 or ec == 0x24 or ec == 0x25);
 
     if (is_page_fault) {
 
-        // FAR_EL1 holds the faulting virtual address for aborts
         const fault_addr = asm volatile ("mrs %[out], far_el1"
             : [out] "=r" (-> u64),
         );
