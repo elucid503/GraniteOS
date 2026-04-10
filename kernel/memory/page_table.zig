@@ -80,8 +80,8 @@ pub fn create() Error!usize {
 /// Returns false on OOM.
 pub fn map_page(l0_pa: usize, va: usize, pa: usize) bool {
 
-    const l1_pa = descend(l0_pa, (va >> 39) & 0x1FF, false) orelse return false;
-    const l2_pa = descend(l1_pa, (va >> 30) & 0x1FF, false) orelse return false;
+    const l1_pa = descend(l0_pa, (va >> 39) & 0x1FF) orelse return false;
+    const l2_pa = descend(l1_pa, (va >> 30) & 0x1FF) orelse return false;
     const l2_tbl: [*]u64 = @ptrFromInt(l2_pa);
     const l2_idx = (va >> 21) & 0x1FF;
 
@@ -248,8 +248,8 @@ pub fn switch_to(l0_pa: usize) void {
 /// Returns true if the L3 entry for va exists and is valid.
 pub fn is_page_mapped(l0_pa: usize, va: usize) bool {
 
-    const l1_pa = descend(l0_pa, (va >> 39) & 0x1FF, false) orelse return false;
-    const l2_pa = descend(l1_pa, (va >> 30) & 0x1FF, false) orelse return false;
+    const l1_pa = descend(l0_pa, (va >> 39) & 0x1FF) orelse return false;
+    const l2_pa = descend(l1_pa, (va >> 30) & 0x1FF) orelse return false;
 
     const l2_tbl: [*]u64 = @ptrFromInt(l2_pa);
     const l2_idx = (va >> 21) & 0x1FF;
@@ -262,11 +262,8 @@ pub fn is_page_mapped(l0_pa: usize, va: usize) bool {
 }
 
 // Walk one level: return the child table's physical address, or null if the entry is not
-// a valid table descriptor. 'alloc' is reserved for future use (not needed here since
-// L0/L1 are pre-allocated in create()).
-fn descend(parent_pa: usize, idx: usize, alloc: bool) ?usize {
-
-    _ = alloc;
+// a valid table descriptor.
+fn descend(parent_pa: usize, idx: usize) ?usize {
 
     const tbl: [*]u64 = @ptrFromInt(parent_pa);
     return table_pa(tbl[idx]);

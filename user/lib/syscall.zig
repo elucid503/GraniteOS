@@ -7,6 +7,7 @@ pub const SYS_EXIT: usize = 93;
 pub const SYS_GETPID: usize = 172;
 pub const SYS_EXECVE: usize = 221;
 pub const SYS_BRK: usize = 214;
+pub const SYS_WAIT4: usize = 260;
 
 pub const STDIN: usize = 0;
 pub const STDOUT: usize = 1;
@@ -82,6 +83,13 @@ pub fn execve(path: [*:0]const u8) isize {
         .x2 = 0,
 
     }));
+
+}
+
+/// Block until the process with the given PID exits. Returns the PID.
+pub fn waitpid(pid: usize) usize {
+
+    return raw(.{ .nr = SYS_WAIT4, .x0 = pid });
 
 }
 

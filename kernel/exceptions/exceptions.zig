@@ -47,10 +47,10 @@ export fn handle_irq(saved_sp: u64) u64 {
 /// Catch-all for unhandled exceptions: print diagnostics and halt.
 export fn handle_unhandled(exception_syndrome: u64, faulting_address: u64) noreturn {
 
-    const ec = (exception_syndrome >> 26) & 0x3F;
+    const exception_class = (exception_syndrome >> 26) & 0x3F;
 
     // EC 0x20/0x21 = instruction abort; 0x24/0x25 = data abort
-    const is_page_fault = (ec == 0x20 or ec == 0x21 or ec == 0x24 or ec == 0x25);
+    const is_page_fault = (exception_class == 0x20 or exception_class == 0x21 or exception_class == 0x24 or exception_class == 0x25);
 
     if (is_page_fault) {
 

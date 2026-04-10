@@ -40,25 +40,23 @@ export fn kmain() noreturn {
 
     scheduler.init();
 
-    // Spawns every embedded user binary as an EL0 process.
+    // Spawn only the launcher, which runs each demo sequentially via fork+exec+waitpid.
+    // Other programs (hello, fork_test, sched_test) are exec'd by the launcher on demand.
 
     for (user_programs.programs) |prog| {
 
-        // Skip 'hello' for now, as it is exec'ed by fork_test to demo execve()
+        if (std.mem.eql(u8, prog.name, "launcher")) {
 
-        if (std.mem.eql(u8, prog.name, "hello")) {
-
-            continue;
+            process.spawn_elf(prog.elf);
+            break;
 
         }
 
-        process.spawn_elf(prog.elf);
-
     }
 
-    uart.print("User Processes ......... ");
+    uart.print("User Programs ......... ");
     uart.putchar('0' + @as(u8, @intCast(user_programs.programs.len)));
-    uart.print(" loaded (");
+    uart.print(" embedded (");
 
     for (user_programs.programs, 0..) |prog, i| {
 

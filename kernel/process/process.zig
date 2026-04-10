@@ -2,7 +2,7 @@
 
 const uart = @import("../drivers/uart.zig");
 const physical_allocator = @import("../memory/physical_allocator.zig");
-const page_table_mod = @import("../memory/page_table.zig");
+const page_table = @import("../memory/page_table.zig");
 const scheduler = @import("../scheduler/scheduler.zig");
 const elf_loader = @import("elf_loader.zig");
 
@@ -17,14 +17,14 @@ const INLINE_STACK_PAGES: usize = 8;
 /// The function must interact with the kernel exclusively via svc #0.
 pub fn spawn_el0_function(entry_point: usize) void {
 
-    const l0 = page_table_mod.create() catch return;
+    const l0 = page_table.create() catch return;
 
     for (0..INLINE_STACK_PAGES) |i| {
 
         const va = INLINE_STACK_TOP - (i + 1) * PAGE_SIZE;
 
-        const pa = physical_allocator.alloc_page() orelse { page_table_mod.free(l0); return; };
-        if (!page_table_mod.map_page(l0, va, pa)) { page_table_mod.free(l0); return; }
+        const pa = physical_allocator.alloc_page() orelse { page_table.free(l0); return; };
+        if (!page_table.map_page(l0, va, pa)) { page_table.free(l0); return; }
 
     }
 
@@ -36,7 +36,7 @@ pub fn spawn_el0_function(entry_point: usize) void {
 /// Silently skips on load failure (kernel continues booting without this process).
 pub fn spawn_elf(elf_bytes: []const u8) void {
 
-    const l0 = page_table_mod.create() catch {
+    const l0 = page_table.create() catch {
 
         uart.print("ELF spawn: page table OOM\r\n");
         return;
@@ -45,12 +45,12 @@ pub fn spawn_elf(elf_bytes: []const u8) void {
 
     // Temporarily activate this process's page table so ELF data can be written to
     // user VAs during loading. Kernel code (0x40000000) is mapped in all tables.
-    page_table_mod.switch_to(l0);
+    page_table.switch_to(l0);
 
     const result = elf_loader.load(elf_bytes, l0) catch |err| {
 
-        page_table_mod.switch_to(page_table_mod.boot_root());
-        page_table_mod.free(l0);
+        page_table.switch_to(page_table.boot_root());
+        page_table.free(l0);
 
         uart.print("ELF load error: ");
         uart.print(@errorName(err));
@@ -61,7 +61,7 @@ pub fn spawn_elf(elf_bytes: []const u8) void {
     };
 
     // Restore the boot page table before returning to kmain.
-    page_table_mod.switch_to(page_table_mod.boot_root());
+    page_table.switch_to(page_table.boot_root());
 
     scheduler.spawn_user_task(result.entry_point, result.stack_top, result.initial_brk, l0);
 
@@ -83,8 +83,8 @@ pub fn exec_current(elf_bytes: []const u8) ?ExecResult {
     const pcb = scheduler.current_process();
 
     // Free user mappings, then flush TLB so stale translations are gone.
-    page_table_mod.free_user_mappings(pcb.page_table_root);
-    page_table_mod.switch_to(pcb.page_table_root);
+    page_table.free_user_mappings(pcb.page_table_root);
+    page_table.switch_to(pcb.page_table_root);
 
     const result = elf_loader.load(elf_bytes, pcb.page_table_root) catch |err| {
 

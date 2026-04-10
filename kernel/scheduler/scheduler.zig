@@ -29,6 +29,9 @@ pub const PCB = struct {
     /// Current user heap break address; 0 for kernel tasks.
     user_brk: usize,
 
+    /// PID this process is waiting on (valid when state == .blocked).
+    wait_target_pid: u32,
+
     /// Dedicated kernel stack for exception and syscall handling.
     kernel_stack: [KERNEL_STACK_SIZE]u8 align(16),
 
@@ -52,6 +55,7 @@ pub fn init() void {
         .page_table_root = page_table.boot_root(),
         .kernel_stack_pointer = 0,
         .user_brk = 0,
+        .wait_target_pid = 0,
         .kernel_stack = undefined,
 
     };
@@ -74,6 +78,7 @@ pub fn spawn_kernel_task(entry_point: *const fn () noreturn) void {
         .page_table_root = page_table.boot_root(),
         .kernel_stack_pointer = 0,
         .user_brk = 0,
+        .wait_target_pid = 0,
         .kernel_stack = undefined,
 
     };
@@ -100,6 +105,7 @@ pub fn spawn_user_task(entry_point: usize, user_stack_top: usize, initial_brk: u
         .page_table_root = l0_pa,
         .kernel_stack_pointer = 0,
         .user_brk = initial_brk,
+        .wait_target_pid = 0,
         .kernel_stack = undefined,
 
     };
@@ -127,11 +133,53 @@ pub fn tick(saved_sp: usize) usize {
 
 }
 
-/// Mark the current process zombie and switch to the next ready process.
+/// Mark the current process zombie, wake any process waiting on this PID,
+/// and switch to the next ready process.
 pub fn exit_current(saved_sp: usize) usize {
+
+    const exiting_pid = processes[current_index].pid;
 
     processes[current_index].kernel_stack_pointer = saved_sp;
     processes[current_index].state = .zombie;
+
+    // Wake any process blocked in waitpid() for this PID.
+    for (&processes) |*proc| {
+
+        if (proc.state == .blocked and proc.wait_target_pid == exiting_pid) {
+
+            proc.state = .ready;
+
+            // Write the exited PID into the waiter's x0 (first word of the exception frame).
+            const x0_ptr: *u64 = @ptrFromInt(proc.kernel_stack_pointer);
+            x0_ptr.* = @intCast(exiting_pid);
+
+        }
+
+    }
+
+    return advance_to_next();
+
+}
+
+/// Block the current process until the target PID exits.
+/// Returns immediately if the target is already zombie.
+pub fn wait_on(saved_sp: usize, target_pid: u32) usize {
+
+    if (target_pid >= process_count) return saved_sp;
+
+    // If already zombie, return immediately with the pid.
+    if (processes[target_pid].state == .zombie) {
+
+        const x0_ptr: *u64 = @ptrFromInt(saved_sp);
+        x0_ptr.* = @intCast(target_pid);
+        return saved_sp;
+
+    }
+
+    // Block until target exits.
+    processes[current_index].kernel_stack_pointer = saved_sp;
+    processes[current_index].state = .blocked;
+    processes[current_index].wait_target_pid = target_pid;
 
     return advance_to_next();
 
@@ -141,6 +189,14 @@ pub fn exit_current(saved_sp: usize) usize {
 pub fn current_process() *PCB {
 
     return &processes[current_index];
+
+}
+
+/// Return true if the given PID exists and is in the zombie state.
+pub fn is_zombie(pid: u32) bool {
+
+    if (pid >= process_count) return false;
+    return processes[pid].state == .zombie;
 
 }
 
@@ -163,6 +219,7 @@ pub fn fork_user_task(parent_frame_sp: usize, child_l0: usize) ?u32 {
         .page_table_root      = child_l0,
         .kernel_stack_pointer = 0,
         .user_brk             = parent.user_brk,
+        .wait_target_pid      = 0,
         .kernel_stack         = undefined,
 
     };

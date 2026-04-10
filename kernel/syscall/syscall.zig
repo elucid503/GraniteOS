@@ -3,7 +3,7 @@
 const uart = @import("../drivers/uart.zig");
 const scheduler = @import("../scheduler/scheduler.zig");
 const physical_allocator = @import("../memory/physical_allocator.zig");
-const page_table_mod = @import("../memory/page_table.zig");
+const page_table = @import("../memory/page_table.zig");
 const process = @import("../process/process.zig");
 const user_programs = @import("user_programs");
 
@@ -14,6 +14,7 @@ const SYS_FORK: u64 = 57;
 const SYS_GETPID: u64 = 172;
 const SYS_EXECVE: u64 = 221;
 const SYS_BRK: u64 = 214;
+const SYS_WAIT4: u64 = 260;
 
 const PAGE_SIZE: usize = 4096;
 
@@ -49,6 +50,7 @@ pub export fn handle_syscall(saved_sp: usize) usize {
         SYS_GETPID => frame.x0 = @as(u64, scheduler.current_process().pid),
         SYS_EXECVE => return sys_execve(saved_sp, frame),
         SYS_BRK => frame.x0 = sys_brk(frame),
+        SYS_WAIT4 => return sys_wait4(saved_sp, frame),
 
         else => frame.x0 = @bitCast(@as(i64, -38)), // -ENOSYS
 
@@ -101,13 +103,22 @@ fn sys_exit(saved_sp: usize) usize {
 
 }
 
+// wait4(pid, ...) - block until the target process exits, then return its PID.
+// Only x0 (pid) is used; status, options, and rusage are ignored.
+fn sys_wait4(saved_sp: usize, frame: *Frame) usize {
+
+    const target_pid: u32 = @intCast(frame.x0);
+    return scheduler.wait_on(saved_sp, target_pid);
+
+}
+
 // fork() → 0 in child, child_pid in parent.
 // Deep-copies the parent's page table and user memory into a new PCB.
 fn sys_fork(saved_sp: usize, frame: *Frame) usize {
 
     const parent = scheduler.current_process();
 
-    const child_l0 = page_table_mod.clone(parent.page_table_root) catch {
+    const child_l0 = page_table.clone(parent.page_table_root) catch {
 
         frame.x0 = @bitCast(@as(i64, -12)); // -ENOMEM
         return saved_sp;
@@ -116,7 +127,7 @@ fn sys_fork(saved_sp: usize, frame: *Frame) usize {
 
     const child_pid = scheduler.fork_user_task(saved_sp, child_l0) orelse {
 
-        page_table_mod.free(child_l0);
+        page_table.free(child_l0);
         frame.x0 = @bitCast(@as(i64, -12));
 
         return saved_sp;
@@ -186,7 +197,7 @@ fn sys_brk(frame: *Frame) u64 {
 
             const pa = physical_allocator.alloc_page() orelse return @intCast(pcb.user_brk);
 
-            if (!page_table_mod.map_page(pcb.page_table_root, va, pa)) {
+            if (!page_table.map_page(pcb.page_table_root, va, pa)) {
 
                 physical_allocator.free_page(pa);
                 return @intCast(pcb.user_brk);
