@@ -1,5 +1,4 @@
-/* user/user.ld - Linker script for GraniteOS user programs.
-   Loads at 0x41000000, inside the identity-mapped normal-memory region. */
+/* user/user.ld - Linker script for GraniteOS user programs. Loads at 0x41000000, inside the identity-mapped normal-memory region. */
 
 ENTRY(_start)
 

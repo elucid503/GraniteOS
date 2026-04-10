@@ -10,7 +10,7 @@ extern var boot_l2_table: [512]u64;
 // Matches the value written by start.S.
 const DEVICE_BLOCK: u64 = 0x0060_0000_0000_0405;
 
-// bits[1:0] = 0b11 — valid table descriptor (used for L0/L1/L2 entries pointing to sub-tables)
+// bits[1:0] = 0b11 - valid table descriptor (used for L0/L1/L2 entries pointing to sub-tables)
 const TABLE_FLAGS: u64 = 0x3;
 
 // L3 page descriptor for user pages:
@@ -29,7 +29,9 @@ pub const Error = error{OutOfMemory};
 
 /// Return the physical address of the boot L0 table (used by process 0 / idle task).
 pub fn boot_root() usize {
+
     return @intFromPtr(&boot_l0_table);
+
 }
 
 /// Allocate a new per-process page table (L0 + L1 + L2).
@@ -64,7 +66,9 @@ pub fn create() Error!usize {
 
     // Copy kernel 2MB block entries from boot L2 (indices 0..7)
     for (0..KERNEL_L2_ENTRIES) |i| {
+
         l2_tbl[i] = boot_l2_table[i];
+
     }
 
     return l0;
@@ -83,13 +87,17 @@ pub fn map_page(l0_pa: usize, va: usize, pa: usize) bool {
 
     // Allocate L3 table if this 2MB slot is empty
     if (l2_tbl[l2_idx] & 0x1 == 0) {
+
         const l3 = physical_allocator.alloc_page() orelse return false;
+
         @memset((@as([*]u64, @ptrFromInt(l3)))[0..512], 0);
         l2_tbl[l2_idx] = l3 | TABLE_FLAGS;
+
     }
 
     const l3_pa = table_pa(l2_tbl[l2_idx]) orelse return false;
     const l3_tbl: [*]u64 = @ptrFromInt(l3_pa);
+
     l3_tbl[(va >> 12) & 0x1FF] = (pa & ~@as(usize, PAGE_SIZE - 1)) | USER_PAGE_ATTRS;
 
     // DSB ensures the descriptor write reaches the page table walker before the VA is used
@@ -108,6 +116,7 @@ pub fn clone(src_l0_pa: usize) Error!usize {
     errdefer free(dst_l0);
 
     // Locate source user L2 table
+
     const src_l0_tbl: [*]u64 = @ptrFromInt(src_l0_pa);
     const src_l1_pa = table_pa(src_l0_tbl[0]) orelse return dst_l0;
     const src_l1_tbl: [*]u64 = @ptrFromInt(src_l1_pa);
@@ -115,6 +124,7 @@ pub fn clone(src_l0_pa: usize) Error!usize {
     const src_l2_tbl: [*]u64 = @ptrFromInt(src_l2_pa);
 
     // Locate destination user L2 table
+
     const dst_l0_tbl: [*]u64 = @ptrFromInt(dst_l0);
     const dst_l1_pa = table_pa(dst_l0_tbl[0]) orelse return dst_l0;
     const dst_l1_tbl: [*]u64 = @ptrFromInt(dst_l1_pa);
@@ -127,8 +137,10 @@ pub fn clone(src_l0_pa: usize) Error!usize {
         const src_l3: [*]u64 = @ptrFromInt(src_l3_pa);
 
         const dst_l3_pa = physical_allocator.alloc_page() orelse return Error.OutOfMemory;
+
         @memset((@as([*]u64, @ptrFromInt(dst_l3_pa)))[0..512], 0);
         dst_l2_tbl[l2i] = dst_l3_pa | TABLE_FLAGS;
+
         const dst_l3: [*]u64 = @ptrFromInt(dst_l3_pa);
 
         for (0..512) |l3i| {
@@ -138,11 +150,13 @@ pub fn clone(src_l0_pa: usize) Error!usize {
 
             // Use the 48-bit PA mask: bits[47:12] only.  The naive ~0xFFF mask
             // leaves upper attribute bits (e.g. PXN at bit 53) in the address.
+
             const src_phys: usize = @intCast(src_entry & 0x0000_FFFF_FFFF_F000);
 
             const dst_phys = physical_allocator.alloc_page() orelse return Error.OutOfMemory;
             const src_bytes: [*]const u8 = @ptrFromInt(src_phys);
             const dst_bytes: [*]u8 = @ptrFromInt(dst_phys);
+
             @memcpy(dst_bytes[0..PAGE_SIZE], src_bytes[0..PAGE_SIZE]);
 
             dst_l3[l3i] = dst_phys | USER_PAGE_ATTRS;
@@ -161,8 +175,10 @@ pub fn clone(src_l0_pa: usize) Error!usize {
 pub fn free_user_mappings(l0_pa: usize) void {
 
     const l0_tbl: [*]u64 = @ptrFromInt(l0_pa);
+
     const l1_pa = table_pa(l0_tbl[0]) orelse return;
     const l1_tbl: [*]u64 = @ptrFromInt(l1_pa);
+
     const l2_pa = table_pa(l1_tbl[1]) orelse return;
     const l2_tbl: [*]u64 = @ptrFromInt(l2_pa);
 
@@ -172,9 +188,12 @@ pub fn free_user_mappings(l0_pa: usize) void {
         const l3_tbl: [*]u64 = @ptrFromInt(l3_pa);
 
         for (0..512) |l3i| {
+
             const entry = l3_tbl[l3i];
             if (entry & 0x1 == 0) continue;
+
             physical_allocator.free_page(@intCast(entry & 0x0000_FFFF_FFFF_F000));
+
         }
 
         physical_allocator.free_page(l3_pa);
@@ -190,12 +209,18 @@ pub fn free(l0_pa: usize) void {
     const l0_tbl: [*]u64 = @ptrFromInt(l0_pa);
 
     if (table_pa(l0_tbl[0])) |l1_pa| {
+
         const l1_tbl: [*]u64 = @ptrFromInt(l1_pa);
+
         if (table_pa(l1_tbl[1])) |l2_pa| {
+
             free_user_mappings(l0_pa);
             physical_allocator.free_page(l2_pa);
+
         }
+
         physical_allocator.free_page(l1_pa);
+
     }
 
     physical_allocator.free_page(l0_pa);
@@ -225,11 +250,13 @@ pub fn is_page_mapped(l0_pa: usize, va: usize) bool {
 
     const l1_pa = descend(l0_pa, (va >> 39) & 0x1FF, false) orelse return false;
     const l2_pa = descend(l1_pa, (va >> 30) & 0x1FF, false) orelse return false;
+
     const l2_tbl: [*]u64 = @ptrFromInt(l2_pa);
     const l2_idx = (va >> 21) & 0x1FF;
 
     const l3_pa = table_pa(l2_tbl[l2_idx]) orelse return false;
     const l3_tbl: [*]u64 = @ptrFromInt(l3_pa);
+
     return l3_tbl[(va >> 12) & 0x1FF] & 0x1 != 0;
 
 }
@@ -238,14 +265,19 @@ pub fn is_page_mapped(l0_pa: usize, va: usize) bool {
 // a valid table descriptor. 'alloc' is reserved for future use (not needed here since
 // L0/L1 are pre-allocated in create()).
 fn descend(parent_pa: usize, idx: usize, alloc: bool) ?usize {
+
     _ = alloc;
+
     const tbl: [*]u64 = @ptrFromInt(parent_pa);
     return table_pa(tbl[idx]);
+
 }
 
 // Extract the physical address from a valid table descriptor.
 // Bits[1:0] must be 0b11 (valid + table type).
 fn table_pa(entry: u64) ?usize {
+
     if (entry & 0x3 != TABLE_FLAGS) return null;
     return @intCast(entry & 0x0000_FFFF_FFFF_F000);
+
 }

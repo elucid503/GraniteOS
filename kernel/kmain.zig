@@ -1,15 +1,15 @@
 // kernel/kmain.zig - Kernel entry point (EL1, MMU on via identity map)
 
 const uart = @import("drivers/uart.zig");
-const gic  = @import("drivers/gic.zig");
+const gic = @import("drivers/gic.zig");
 
-const timer     = @import("scheduler/timer.zig");
+const timer = @import("scheduler/timer.zig");
 const scheduler = @import("scheduler/scheduler.zig");
 
 const exceptions = @import("exceptions/exceptions.zig");
 
 const physical_allocator = @import("memory/physical_allocator.zig");
-const heap               = @import("memory/heap.zig");
+const heap = @import("memory/heap.zig");
 
 const process = @import("process/process.zig");
 
@@ -40,16 +40,22 @@ export fn kmain() noreturn {
 
     // Spawn every embedded user binary as an EL0 process.
     for (user_programs.programs) |prog| {
+
         process.spawn_elf(prog.elf);
+
     }
 
     uart.print("User Processes ......... ");
     uart.putchar('0' + @as(u8, @intCast(user_programs.programs.len)));
     uart.print(" loaded (");
+
     for (user_programs.programs, 0..) |prog, i| {
+
         uart.print(prog.name);
         if (i + 1 < user_programs.programs.len) uart.print(", ");
+
     }
+
     uart.print(")\r\n\r\n");
 
     exceptions.enable_interrupts();

@@ -8,7 +8,6 @@ const cpu_priority_mask = @as(*volatile u32, @ptrFromInt(0x0801_0000 + 0x004));
 const cpu_interrupt_ack = @as(*volatile u32, @ptrFromInt(0x0801_0000 + 0x00C));
 const cpu_end_of_interrupt = @as(*volatile u32, @ptrFromInt(0x0801_0000 + 0x010));
 
-
 pub fn init() void {
 
     distributor_control.* = 1;

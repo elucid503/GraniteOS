@@ -5,8 +5,8 @@ const page_table = @import("../memory/page_table.zig");
 pub const KERNEL_STACK_SIZE: usize = 8192;
 const MAX_PROCESSES: usize = 16;
 const FRAME_SIZE: usize = 272; // Must match boot/vectors.S
-const ELR_OFFSET: usize    = 248;
-const SPSR_OFFSET: usize   = 256;
+const ELR_OFFSET: usize = 248;
+const SPSR_OFFSET: usize = 256;
 const SP_EL0_OFFSET: usize = 264;
 
 const SPSR_EL1H: u64 = 0x5; // EL1h, interrupts enabled
@@ -14,7 +14,7 @@ const SPSR_EL0T: u64 = 0x0; // EL0t, interrupts enabled
 
 pub const ProcessState = enum { empty, ready, running, blocked, zombie };
 
-/// Process Control Block — everything needed to pause and resume a process.
+/// Process Control Block - everything needed to pause and resume a process.
 pub const PCB = struct {
 
     pid: u32,
@@ -35,6 +35,7 @@ pub const PCB = struct {
 };
 
 var processes: [MAX_PROCESSES]PCB = undefined;
+
 pub var process_count: usize = 0;
 var current_index: usize = 0;
 
@@ -43,13 +44,16 @@ pub fn init() void {
     for (&processes) |*p| p.state = .empty;
 
     // Process 0: idle task running on the boot stack and boot page table.
+
     processes[0] = .{
-        .pid                  = 0,
-        .state                = .running,
-        .page_table_root      = page_table.boot_root(),
+
+        .pid = 0,
+        .state = .running,
+        .page_table_root = page_table.boot_root(),
         .kernel_stack_pointer = 0,
-        .user_brk             = 0,
-        .kernel_stack         = undefined,
+        .user_brk = 0,
+        .kernel_stack = undefined,
+
     };
 
     process_count = 1;
@@ -64,15 +68,18 @@ pub fn spawn_kernel_task(entry_point: *const fn () noreturn) void {
     const pcb = &processes[pid];
 
     pcb.* = .{
-        .pid                  = @intCast(pid),
-        .state                = .ready,
-        .page_table_root      = page_table.boot_root(),
+
+        .pid = @intCast(pid),
+        .state = .ready,
+        .page_table_root = page_table.boot_root(),
         .kernel_stack_pointer = 0,
-        .user_brk             = 0,
-        .kernel_stack         = undefined,
+        .user_brk = 0,
+        .kernel_stack = undefined,
+
     };
 
     const initial_sp = kernel_stack_top(pcb) - FRAME_SIZE;
+
     build_initial_frame(initial_sp, @intFromPtr(entry_point), SPSR_EL1H, 0);
     pcb.kernel_stack_pointer = initial_sp;
 
@@ -87,15 +94,18 @@ pub fn spawn_user_task(entry_point: usize, user_stack_top: usize, initial_brk: u
     const pcb = &processes[pid];
 
     pcb.* = .{
-        .pid                  = @intCast(pid),
-        .state                = .ready,
-        .page_table_root      = l0_pa,
+
+        .pid = @intCast(pid),
+        .state = .ready,
+        .page_table_root = l0_pa,
         .kernel_stack_pointer = 0,
-        .user_brk             = initial_brk,
-        .kernel_stack         = undefined,
+        .user_brk = initial_brk,
+        .kernel_stack = undefined,
+
     };
 
     const initial_sp = kernel_stack_top(pcb) - FRAME_SIZE;
+
     build_initial_frame(initial_sp, entry_point, SPSR_EL0T, user_stack_top);
     pcb.kernel_stack_pointer = initial_sp;
 
@@ -107,8 +117,10 @@ pub fn spawn_user_task(entry_point: usize, user_stack_top: usize, initial_brk: u
 pub fn tick(saved_sp: usize) usize {
 
     if (processes[current_index].state == .running) {
+
         processes[current_index].kernel_stack_pointer = saved_sp;
         processes[current_index].state = .ready;
+
     }
 
     return advance_to_next();
@@ -145,20 +157,24 @@ pub fn fork_user_task(parent_frame_sp: usize, child_l0: usize) ?u32 {
     const child  = &processes[pid];
 
     child.* = .{
+
         .pid                  = @intCast(pid),
         .state                = .ready,
         .page_table_root      = child_l0,
         .kernel_stack_pointer = 0,
         .user_brk             = parent.user_brk,
         .kernel_stack         = undefined,
+
     };
 
     // Place a copy of the parent's exception frame at the top of the child's kernel stack.
+
     const child_stack_top = @intFromPtr(&child.kernel_stack) + KERNEL_STACK_SIZE;
     const child_sp = child_stack_top - FRAME_SIZE;
 
     const parent_bytes: [*]const u8 = @ptrFromInt(parent_frame_sp);
     const child_bytes: [*]u8 = @ptrFromInt(child_sp);
+
     @memcpy(child_bytes[0..FRAME_SIZE], parent_bytes[0..FRAME_SIZE]);
 
     // x0 is the first field of the frame; fork() returns 0 to the child.
@@ -196,20 +212,27 @@ fn advance_to_next() usize {
     while (tries < process_count) : (tries += 1) {
 
         if (processes[next].state == .ready) {
+
             current_index = next;
+
             processes[current_index].state = .running;
             page_table.switch_to(processes[current_index].page_table_root);
+
             return processes[current_index].kernel_stack_pointer;
+
         }
 
         next = (next + 1) % process_count;
 
     }
 
-    // No ready process — idle on process 0.
+    // No ready process - idle on process 0.
+
     current_index = 0;
     processes[0].state = .running;
+
     page_table.switch_to(processes[0].page_table_root);
+
     return processes[0].kernel_stack_pointer;
 
 }

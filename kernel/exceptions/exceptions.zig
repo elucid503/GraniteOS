@@ -77,11 +77,15 @@ export fn handle_unhandled(exception_syndrome: u64, faulting_address: u64) noret
 fn print_exception(label: []const u8, syndrome: u64, address: u64) void {
 
     uart.print(label);
+
     uart.print("\r\n\r\n");
+
     uart.print("syndrome: ");
     uart.print_hex(syndrome);
+
     uart.print("\r\naddress:  ");
     uart.print_hex(address);
+
     uart.print("\r\n");
 
 }
