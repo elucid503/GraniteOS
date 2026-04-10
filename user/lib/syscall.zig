@@ -1,13 +1,13 @@
 // user/lib/syscall.zig - Syscall interface for GraniteOS user space
 
-pub const SYS_FORK: usize = 57;
-pub const SYS_READ: usize = 63;
-pub const SYS_WRITE: usize = 64;
-pub const SYS_EXIT: usize = 93;
-pub const SYS_GETPID: usize = 172;
-pub const SYS_EXECVE: usize = 221;
-pub const SYS_BRK: usize = 214;
-pub const SYS_WAIT4: usize = 260;
+pub const SYS_WRITE: usize = 1;
+pub const SYS_READ: usize = 2;
+pub const SYS_EXIT: usize = 3;
+pub const SYS_GETPID: usize = 4;
+pub const SYS_FORK: usize = 5;
+pub const SYS_EXECVE: usize = 6;
+pub const SYS_BRK: usize = 7;
+pub const SYS_WAIT4: usize = 8;
 
 pub const STDIN: usize = 0;
 pub const STDOUT: usize = 1;

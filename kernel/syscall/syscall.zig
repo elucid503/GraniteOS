@@ -1,4 +1,4 @@
-// kernel/syscall/syscall.zig - Syscall dispatch (Linux AArch64 numbers)
+// kernel/syscall/syscall.zig - Syscall dispatch (GraniteOS syscall numbers)
 
 const uart = @import("../drivers/uart.zig");
 const scheduler = @import("../scheduler/scheduler.zig");
@@ -7,14 +7,14 @@ const page_table = @import("../memory/page_table.zig");
 const process = @import("../process/process.zig");
 const user_programs = @import("user_programs");
 
-const SYS_READ: u64 = 63;
-const SYS_WRITE: u64 = 64;
-const SYS_EXIT: u64 = 93;
-const SYS_FORK: u64 = 57;
-const SYS_GETPID: u64 = 172;
-const SYS_EXECVE: u64 = 221;
-const SYS_BRK: u64 = 214;
-const SYS_WAIT4: u64 = 260;
+const SYS_WRITE: u64 = 1;
+const SYS_READ: u64 = 2;
+const SYS_EXIT: u64 = 3;
+const SYS_GETPID: u64 = 4;
+const SYS_FORK: u64 = 5;
+const SYS_EXECVE: u64 = 6;
+const SYS_BRK: u64 = 7;
+const SYS_WAIT4: u64 = 8;
 
 const PAGE_SIZE: usize = 4096;
 
