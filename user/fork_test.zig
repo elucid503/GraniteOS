@@ -84,7 +84,7 @@ export fn _start() noreturn {
 
         io.print("[Parent - PID ");
         io.print_int(my_pid);
-        io.print("] forked child PID ");
+        io.print("] forked child, PID ");
         io.print_int(child_pid);
         io.println("");
 

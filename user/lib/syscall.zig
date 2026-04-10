@@ -1,4 +1,4 @@
-// user/lib/syscall.zig - Syscall interface for GraniteOS user space (Linux AArch64 numbers)
+// user/lib/syscall.zig - Syscall interface for GraniteOS user space
 
 pub const SYS_FORK: usize = 57;
 pub const SYS_READ: usize = 63;

@@ -1,5 +1,7 @@
 // kernel/kmain.zig - Kernel entry point (EL1, MMU on via identity map)
 
+const std = @import("std");
+
 const uart = @import("drivers/uart.zig");
 const gic = @import("drivers/gic.zig");
 
@@ -38,8 +40,17 @@ export fn kmain() noreturn {
 
     scheduler.init();
 
-    // Spawn every embedded user binary as an EL0 process.
+    // Spawns every embedded user binary as an EL0 process.
+
     for (user_programs.programs) |prog| {
+
+        // Skip 'hello' for now, as it is exec'ed by fork_test to demo execve()
+
+        if (std.mem.eql(u8, prog.name, "hello")) {
+
+            continue;
+
+        }
 
         process.spawn_elf(prog.elf);
 

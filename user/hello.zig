@@ -1,4 +1,4 @@
-// user/hello.zig - Hello world user process; demonstrates write, getpid, brk, exit.
+// user/hello.zig - Hello world user process; demonstrates write, getpid, and exit.
 
 const sys = @import("lib/syscall.zig");
 const io = @import("lib/io.zig");
