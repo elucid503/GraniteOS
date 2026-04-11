@@ -1,7 +1,7 @@
 // user/signal_test.zig: demo of signal delivery, handling, and default terminate
 
-const sys = @import("lib/syscall.zig");
-const io = @import("lib/io.zig");
+const sys = @import("syscall");
+const io = @import("io");
 
 var signal_received: usize = 0;
 

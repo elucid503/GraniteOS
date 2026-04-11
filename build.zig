@@ -14,8 +14,8 @@ pub fn build(b: *std.Build) void {
 
     const optimize = b.standardOptimizeOption(.{});
 
-    // Discovers and builds every *.zig file in user/ (top-level only; user/lib/ is skipped
-    // because it contains no entry points and is only imported by user programs).
+    // Discovers and builds every *.zig file in user/programs/ and user/programs/testers/.
+    // user/lib/ is skipped because it contains no entry points and is only imported by programs.
 
     // Each binary is copied into a WriteFiles directory alongside a generated
     // user_programs.zig that @embedFile's them all. The kernel imports that module.
@@ -32,71 +32,99 @@ pub fn build(b: *std.Build) void {
         \\
     ) catch @panic("OOM");
 
-    // Collect names so we can sort them for reproducible builds.
-    var names: std.ArrayListUnmanaged([]const u8) = .{};
-    defer names.deinit(b.allocator);
+    // Collect (name, source_path) pairs so we can sort them for reproducible builds.
+    const SrcEntry = struct { name: []const u8, src: []const u8 };
+    var entries: std.ArrayListUnmanaged(SrcEntry) = .{};
+    defer entries.deinit(b.allocator);
 
-    const user_dir_path = b.pathFromRoot("user");
+    const scan_dirs = [_][]const u8{ "user/programs", "user/programs/testers" };
 
-    var user_dir = std.fs.openDirAbsolute(user_dir_path, .{ .iterate = true })
-        catch @panic("cannot open user/");
-    defer user_dir.close();
+    for (scan_dirs) |dir_rel| {
 
-    var iter = user_dir.iterate();
+        const dir_abs = b.pathFromRoot(dir_rel);
 
-    while (iter.next() catch null) |entry| {
+        var prog_dir = std.fs.openDirAbsolute(dir_abs, .{ .iterate = true })
+            catch @panic("cannot open programs dir");
+        defer prog_dir.close();
 
-        if (entry.kind != .file) continue;
-        if (!std.mem.endsWith(u8, entry.name, ".zig")) continue;
+        var iter = prog_dir.iterate();
 
-        const name = b.allocator.dupe(u8, entry.name[0 .. entry.name.len - 4])
-            catch @panic("OOM");
-        names.append(b.allocator, name) catch @panic("OOM");
+        while (iter.next() catch null) |entry| {
+
+            if (entry.kind != .file) continue;
+            if (!std.mem.endsWith(u8, entry.name, ".zig")) continue;
+
+            const name = b.allocator.dupe(u8, entry.name[0 .. entry.name.len - 4])
+                catch @panic("OOM");
+            const src = std.fmt.allocPrint(b.allocator, "{s}/{s}.zig", .{ dir_rel, name })
+                catch @panic("OOM");
+            entries.append(b.allocator, .{ .name = name, .src = src }) catch @panic("OOM");
+
+        }
 
     }
 
     // Sort for deterministic embed order.
 
-    std.mem.sort([]const u8, names.items, {}, struct {
+    std.mem.sort(SrcEntry, entries.items, {}, struct {
 
-        fn lt(_: void, a: []const u8, b_str: []const u8) bool {
+        fn lt(_: void, a: SrcEntry, b_entry: SrcEntry) bool {
 
-            return std.mem.lessThan(u8, a, b_str);
+            return std.mem.lessThan(u8, a.name, b_entry.name);
 
         }
 
     }.lt);
 
-    for (names.items) |name| {
+    const syscall_mod = b.createModule(.{
+        .root_source_file = b.path("user/lib/syscall.zig"),
+    });
 
-        const source_path = std.fmt.allocPrint(b.allocator, "user/{s}.zig", .{name})
-            catch @panic("OOM");
+    const io_mod = b.createModule(.{
+        .root_source_file = b.path("user/lib/io.zig"),
+    });
 
-        const user_prog = b.addExecutable(.{
+    io_mod.addImport("syscall", syscall_mod);
 
-            .name = name,
-            .root_module = b.createModule(.{
+    const mem_mod = b.createModule(.{
+        .root_source_file = b.path("user/lib/mem.zig"),
+    });
 
-                .root_source_file = b.path(source_path),
-                .target = target,
-                .optimize = .ReleaseSmall,
-                .single_threaded  = true,
+    mem_mod.addImport("syscall", syscall_mod);
 
-            }),
+    for (entries.items) |entry| {
+
+        const prog_mod = b.createModule(.{
+
+            .root_source_file = b.path(entry.src),
+            .target = target,
+            .optimize = .ReleaseSmall,
+            .single_threaded  = true,
 
         });
 
-        user_prog.setLinkerScript(b.path("user/user.ld"));
+        prog_mod.addImport("syscall", syscall_mod);
+        prog_mod.addImport("io", io_mod);
+        prog_mod.addImport("mem", mem_mod);
+
+        const user_prog = b.addExecutable(.{
+
+            .name = entry.name,
+            .root_module = prog_mod,
+
+        });
+
+        user_prog.setLinkerScript(b.path("user/linker/user.ld"));
         user_prog.entry = .{ .symbol_name = "_start" };
 
-        // Copy the compiled binary into the WriteFiles directory under its name.
-        _ = write_files.addCopyFile(user_prog.getEmittedBin(), name);
+        // Copies the compiled binary into the WriteFiles directory under its name.
+        _ = write_files.addCopyFile(user_prog.getEmittedBin(), entry.name);
 
-        // Append an entry to the generated module source.
+        // Appends an entry to the generated module source.
         std.fmt.format(module_source.writer(b.allocator),
 
             "    .{{ .name = \"{s}\", .elf = @embedFile(\"{s}\") }},\n",
-            .{ name, name },
+            .{ entry.name, entry.name },
 
         ) catch @panic("OOM");
 

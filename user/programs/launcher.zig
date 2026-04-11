@@ -1,7 +1,7 @@
 // user/launcher.zig: runs each demo program sequentially via fork + exec + waitpid
 
-const sys = @import("lib/syscall.zig");
-const io = @import("lib/io.zig");
+const sys = @import("syscall");
+const io = @import("io");
 
 const demos = [_][*:0]const u8{ "fork_test", "sched_test", "pipe_test", "signal_test" };
 

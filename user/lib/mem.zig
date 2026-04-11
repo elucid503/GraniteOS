@@ -1,6 +1,6 @@
 // user/lib/mem.zig - User-space heap allocator built on brk()
 
-const sys = @import("syscall.zig");
+const sys = @import("syscall");
 
 var heap_current: usize = 0;
 var heap_end: usize = 0;

@@ -1,7 +1,7 @@
 // user/fork_test.zig: demo of fork() + memory isolation + execve()
 
-const sys = @import("lib/syscall.zig");
-const io = @import("lib/io.zig");
+const sys = @import("syscall");
+const io = @import("io");
 
 export fn _start() noreturn {
 

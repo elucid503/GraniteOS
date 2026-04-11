@@ -1,6 +1,6 @@
 // user/lib/io.zig - User-space I/O helpers built on syscalls
 
-const sys = @import("syscall.zig");
+const sys = @import("syscall");
 
 /// Write a string to stdout.
 pub fn print(s: []const u8) void {

@@ -1,7 +1,7 @@
 // user/sched_test.zig: demo of preemptive scheduling across forked processes
 
-const sys = @import("lib/syscall.zig");
-const io = @import("lib/io.zig");
+const sys = @import("syscall");
+const io = @import("io");
 
 export fn _start() noreturn {
 
