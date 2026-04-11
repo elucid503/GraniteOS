@@ -14,6 +14,7 @@ const physical_allocator = @import("memory/physical_allocator.zig");
 const heap = @import("memory/heap.zig");
 
 const process = @import("process/process.zig");
+const fs = @import("fs/fs.zig");
 
 // Auto-generated module: all *.zig files in user/ compiled to ELF and embedded.
 const user_programs = @import("user_programs");
@@ -31,6 +32,9 @@ export fn kmain() noreturn {
 
     heap.init(16);
     uart.print("Kernel Heap ......... Initialized\r\n");
+
+    fs.init();
+    uart.print("File System ......... Initialized\r\n");
 
     gic.init();
     uart.print("GIC ......... Initialized\r\n");

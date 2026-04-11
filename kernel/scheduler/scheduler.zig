@@ -14,6 +14,23 @@ const SPSR_EL0T: u64 = 0x0; // EL0t, interrupts enabled
 
 pub const ProcessState = enum { empty, ready, running, blocked, zombie };
 
+pub const MAX_OPEN_FILES: usize = 12;
+pub const SIGNAL_COUNT: usize = 4;
+
+pub const FdKind = enum { none, file, pipe };
+
+/// Per-process file descriptor entry (fds 3+ map here; 0-2 are always UART).
+pub const FdEntry = struct {
+
+    active: bool = false,
+    kind: FdKind = .none,
+    entry: u8 = 0,       // index into global file table or pipe table
+    offset: usize = 0,   // read/write cursor (files only)
+    can_read: bool = false,
+    can_write: bool = false,
+
+};
+
 /// Process Control Block - everything needed to pause and resume a process.
 pub const PCB = struct {
 
@@ -32,12 +49,32 @@ pub const PCB = struct {
     /// PID this process is waiting on (valid when state == .blocked).
     wait_target_pid: u32,
 
+    // --- File descriptors ---
+
+    file_descriptors: [MAX_OPEN_FILES]FdEntry = [_]FdEntry{.{}} ** MAX_OPEN_FILES,
+
+    /// Pipe index this process is blocked on (-1 = not waiting).
+    waiting_on_pipe: i8 = -1,
+
+    // --- Signal state ---
+
+    pending_signals: u8 = 0,
+    signal_handlers: [SIGNAL_COUNT]usize = [_]usize{0} ** SIGNAL_COUNT,
+    signal_delivering: bool = false,
+    stopped_by_signal: bool = false,
+
+    /// Saved context for signal return (populated on signal delivery).
+    saved_signal_elr: u64 = 0,
+    saved_signal_sp: u64 = 0,
+    saved_signal_x0: u64 = 0,
+    saved_signal_x30: u64 = 0,
+
     /// Dedicated kernel stack for exception and syscall handling.
     kernel_stack: [KERNEL_STACK_SIZE]u8 align(16),
 
 };
 
-var processes: [MAX_PROCESSES]PCB = undefined;
+pub var processes: [MAX_PROCESSES]PCB = undefined;
 
 pub var process_count: usize = 0;
 var current_index: usize = 0;
@@ -142,14 +179,16 @@ pub fn exit_current(saved_sp: usize) usize {
     processes[current_index].kernel_stack_pointer = saved_sp;
     processes[current_index].state = .zombie;
 
-    // Wake any process blocked in waitpid() for this PID.
+    // Here we 'wake' any process blocked in waitpid() for this PID.
+
     for (&processes) |*proc| {
 
         if (proc.state == .blocked and proc.wait_target_pid == exiting_pid) {
 
             proc.state = .ready;
 
-            // Write the exited PID into the waiter's x0 (first word of the exception frame).
+            // Writes the exited PID into the waiter's x0 (first word of the exception frame).
+
             const x0_ptr: *u64 = @ptrFromInt(proc.kernel_stack_pointer);
             x0_ptr.* = @intCast(exiting_pid);
 
@@ -167,7 +206,8 @@ pub fn wait_on(saved_sp: usize, target_pid: u32) usize {
 
     if (target_pid >= process_count) return saved_sp;
 
-    // If already zombie, return immediately with the pid.
+    // If already zombie, returns immediately with the pid.
+
     if (processes[target_pid].state == .zombie) {
 
         const x0_ptr: *u64 = @ptrFromInt(saved_sp);
@@ -177,11 +217,42 @@ pub fn wait_on(saved_sp: usize, target_pid: u32) usize {
     }
 
     // Block until target exits.
+
+    processes[current_index].wait_target_pid = target_pid;
+    return block_current(saved_sp);
+
+}
+
+/// Block the current process and switch to the next ready process.
+pub fn block_current(saved_sp: usize) usize {
+
     processes[current_index].kernel_stack_pointer = saved_sp;
     processes[current_index].state = .blocked;
-    processes[current_index].wait_target_pid = target_pid;
-
     return advance_to_next();
+
+}
+
+/// Wake all processes blocked on a pipe read for the given pipe index.
+pub fn wake_pipe_waiters(pipe_index: u8) void {
+
+    for (&processes) |*proc| {
+
+        if (proc.state == .blocked and proc.waiting_on_pipe == @as(i8, @intCast(pipe_index))) {
+
+            proc.state = .ready;
+            proc.waiting_on_pipe = -1;
+
+        }
+
+    }
+
+}
+
+/// Return a pointer to the PCB for the given PID, or null if out of range.
+pub fn get_process(pid: u32) ?*PCB {
+
+    if (pid >= process_count) return null;
+    return &processes[pid];
 
 }
 
@@ -220,6 +291,8 @@ pub fn fork_user_task(parent_frame_sp: usize, child_l0: usize) ?u32 {
         .kernel_stack_pointer = 0,
         .user_brk             = parent.user_brk,
         .wait_target_pid      = 0,
+        .file_descriptors     = parent.file_descriptors,
+        .signal_handlers      = parent.signal_handlers,
         .kernel_stack         = undefined,
 
     };

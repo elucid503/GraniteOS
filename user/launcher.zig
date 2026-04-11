@@ -3,7 +3,7 @@
 const sys = @import("lib/syscall.zig");
 const io = @import("lib/io.zig");
 
-const demos = [_][*:0]const u8{ "fork_test", "sched_test" };
+const demos = [_][*:0]const u8{ "fork_test", "sched_test", "pipe_test", "signal_test" };
 
 export fn _start() noreturn {
 

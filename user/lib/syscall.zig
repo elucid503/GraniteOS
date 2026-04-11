@@ -8,10 +8,21 @@ pub const SYS_FORK: usize = 5;
 pub const SYS_EXECVE: usize = 6;
 pub const SYS_BRK: usize = 7;
 pub const SYS_WAIT4: usize = 8;
+pub const SYS_OPEN: usize = 9;
+pub const SYS_CLOSE: usize = 10;
+pub const SYS_PIPE: usize = 11;
+pub const SYS_CREATE: usize = 12;
+pub const SYS_KILL: usize = 13;
+pub const SYS_SIGACTION: usize = 14;
+pub const SYS_SIGRETURN: usize = 15;
 
 pub const STDIN: usize = 0;
 pub const STDOUT: usize = 1;
 pub const STDERR: usize = 2;
+
+pub const OPEN_READ: usize = 1;
+pub const OPEN_WRITE: usize = 2;
+pub const OPEN_READWRITE: usize = 3;
 
 /// Write bytes to a file descriptor. Returns bytes written, or a negative error code.
 pub fn write(fd: usize, buf: []const u8) isize {
@@ -90,6 +101,64 @@ pub fn execve(path: [*:0]const u8) isize {
 pub fn waitpid(pid: usize) usize {
 
     return raw(.{ .nr = SYS_WAIT4, .x0 = pid });
+
+}
+
+/// Create a new empty file in the in-memory file system.
+pub fn create(name: [*:0]const u8) isize {
+
+    return @bitCast(raw(.{ .nr = SYS_CREATE, .x0 = @intFromPtr(name) }));
+
+}
+
+/// Open an existing file. flags: OPEN_READ=1, OPEN_WRITE=2, OPEN_READWRITE=3.
+/// Returns the fd (>= 3) on success, or a negative error code.
+pub fn open(name: [*:0]const u8, flags: usize) isize {
+
+    return @bitCast(raw(.{
+
+        .nr = SYS_OPEN,
+        .x0 = @intFromPtr(name),
+        .x1 = flags,
+
+    }));
+
+}
+
+/// Close a file descriptor.
+pub fn close(fd: usize) isize {
+
+    return @bitCast(raw(.{ .nr = SYS_CLOSE, .x0 = fd }));
+
+}
+
+/// Create a pipe. Writes [read_fd, write_fd] into fds. Returns 0 on success.
+pub fn pipe(fds: *[2]usize) isize {
+
+    return @bitCast(raw(.{ .nr = SYS_PIPE, .x0 = @intFromPtr(fds) }));
+
+}
+
+/// Send a signal to a process. Returns 0 on success.
+pub fn kill(pid: usize, sig: usize) isize {
+
+    return @bitCast(raw(.{ .nr = SYS_KILL, .x0 = pid, .x1 = sig }));
+
+}
+
+/// Register a signal handler. Pass 0 as handler to restore default behavior.
+pub fn sigaction(sig: usize, handler: usize) isize {
+
+    return @bitCast(raw(.{ .nr = SYS_SIGACTION, .x0 = sig, .x1 = handler }));
+
+}
+
+/// Return from a signal handler. Restores the context from before signal delivery.
+/// Must be called at the end of every signal handler. Never returns.
+pub fn sigreturn() noreturn {
+
+    _ = raw(.{ .nr = SYS_SIGRETURN });
+    unreachable;
 
 }
 

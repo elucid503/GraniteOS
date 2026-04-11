@@ -5,10 +5,12 @@ const gic = @import("../drivers/gic.zig");
 const timer = @import("../scheduler/timer.zig");
 const scheduler = @import("../scheduler/scheduler.zig");
 const syscall = @import("../syscall/syscall.zig");
+const signal = @import("../signal/signal.zig");
 
-// Force syscall module into the compilation so handle_syscall is linked.
 comptime {
-    _ = syscall.handle_syscall;
+
+    _ = syscall.handle_syscall; // Forces the syscall handler to be included in the binary
+
 }
 
 pub fn enable_interrupts() void {
@@ -30,7 +32,7 @@ export fn handle_irq(saved_sp: u64) u64 {
 
         gic.end_of_interrupt(interrupt_id);
 
-        return new_sp;
+        return signal.check_and_deliver(new_sp);
 
     }
 
@@ -80,10 +82,10 @@ fn print_exception(label: []const u8, syndrome: u64, address: u64) void {
 
     uart.print("\r\n\r\n");
 
-    uart.print("syndrome: ");
+    uart.print("Syndrome: ");
     uart.print_hex(syndrome);
 
-    uart.print("\r\naddress:  ");
+    uart.print("\r\nAddress:  ");
     uart.print_hex(address);
 
     uart.print("\r\n");
