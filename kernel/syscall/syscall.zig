@@ -78,8 +78,6 @@ pub export fn handle_syscall(saved_sp: usize) usize {
 
 }
 
-// --- I/O syscalls (fd-aware) ---
-
 // read(fd, buf, count) → bytes read, or negative error.
 // fd 0 reads from UART. fd >= 3 goes through the file system / pipe layer.
 // Pipe reads may block if the pipe is empty and writers exist.
@@ -202,8 +200,6 @@ fn sys_write(frame: *Frame) u64 {
 
 }
 
-// --- Process lifecycle ---
-
 // exit(code) - close fds, mark zombie, switch to next.
 fn sys_exit(saved_sp: usize) usize {
 
@@ -316,8 +312,6 @@ fn sys_brk(frame: *Frame) u64 {
 
 }
 
-// --- File system syscalls ---
-
 // create(name) → 0 or negative error.
 fn sys_create(frame: *Frame) u64 {
 
@@ -373,8 +367,6 @@ fn sys_pipe(frame: *Frame) u64 {
 
 }
 
-// --- Signal syscalls ---
-
 // kill(pid, signal) → 0 or negative error.
 fn sys_kill(frame: *Frame) u64 {
 
@@ -398,8 +390,6 @@ fn sys_sigaction(frame: *Frame) u64 {
     return 0;
 
 }
-
-// --- Helpers ---
 
 fn find_program(name: []const u8) ?[]const u8 {
 
