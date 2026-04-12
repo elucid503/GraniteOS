@@ -16,7 +16,7 @@ export fn _start() noreturn {
 
         if (child == 0) {
 
-            _ = sys.execve("basalt", null);
+            _ = sys.execve("/programs/basalt", null);
 
             io.println("[SLATE] failed to exec basalt");
             sys.exit(1);

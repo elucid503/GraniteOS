@@ -22,6 +22,10 @@ pub const SYS_RENAME: usize = 19;
 pub const SYS_LISTFILES: usize = 20;
 pub const SYS_SYSINFO: usize = 21;
 pub const SYS_CHMOD: usize = 22;
+pub const SYS_CHDIR: usize = 23;
+pub const SYS_MKDIR: usize = 24;
+pub const SYS_RMDIR: usize = 25;
+pub const SYS_GETCWD: usize = 26;
 
 pub const STDIN: usize = 0;
 pub const STDOUT: usize = 1;
@@ -218,16 +222,58 @@ pub fn rename(old_name: [*:0]const u8, new_name: [*:0]const u8) isize {
 
 }
 
-/// List files. Writes name\0size_string\0 pairs into buf. Returns bytes written.
+/// List files in the current directory. Writes name\0kind\0size\0 per entry (`kind` is `f` or `d`).
 pub fn listfiles(buf: []u8) usize {
+
+    return listfiles_in(buf, null);
+
+}
+
+/// List files in `dir_path` (null = current directory). `dir_path` must name an existing directory.
+pub fn listfiles_in(buf: []u8, dir_path: ?[*:0]const u8) usize {
 
     return raw(.{
 
         .nr = SYS_LISTFILES,
         .x0 = @intFromPtr(buf.ptr),
         .x1 = buf.len,
+        .x2 = if (dir_path) |p| @intFromPtr(p) else 0,
 
     });
+
+}
+
+/// Change the current working directory.
+pub fn chdir(path: [*:0]const u8) isize {
+
+    return @bitCast(raw(.{ .nr = SYS_CHDIR, .x0 = @intFromPtr(path) }));
+
+}
+
+/// Create a directory (supports nested paths such as `a/b`).
+pub fn mkdir(path: [*:0]const u8) isize {
+
+    return @bitCast(raw(.{ .nr = SYS_MKDIR, .x0 = @intFromPtr(path) }));
+
+}
+
+/// Remove an empty directory.
+pub fn rmdir(path: [*:0]const u8) isize {
+
+    return @bitCast(raw(.{ .nr = SYS_RMDIR, .x0 = @intFromPtr(path) }));
+
+}
+
+/// Write the absolute path of the current directory into `buf` (NUL-terminated). Returns byte count including NUL, or a negative error.
+pub fn getcwd(buf: []u8) isize {
+
+    return @bitCast(raw(.{
+
+        .nr = SYS_GETCWD,
+        .x0 = @intFromPtr(buf.ptr),
+        .x1 = buf.len,
+
+    }));
 
 }
 

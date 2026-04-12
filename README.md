@@ -232,7 +232,7 @@ This is the full chain required before a user-compiled binary can run on Granite
 2. Binary is placed into the ramfs image
    (embedded in kernel at build time, or loaded from initrd)
 
-3. Shell calls fork() -> child calls execve("/bin/hello", ...)
+3. Shell calls fork() -> child calls execve("/programs/hello", ...)
 
 4. Kernel execve handler:
    a. Loads ELF: allocates user pages, copies segments

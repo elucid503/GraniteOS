@@ -27,11 +27,17 @@ pub const programs: []const Entry = &.{
     .{ .name = "cat", .description = "Copy stdin to stdout", .category = "common", .listed = true },
     .{ .name = "wc", .description = "Count lines and bytes from stdin", .category = "common", .listed = true },
 
+    // Working directory (cd is a basalt built-in; path is also a built-in and a standalone program)
+
+    .{ .name = "cd", .description = "Change working directory", .category = "location", .listed = true },
+    .{ .name = "path", .description = "Print the working directory", .category = "location", .listed = true },
+
     // File system utilities
 
-    .{ .name = "ls", .description = "List files", .category = "fs", .listed = true },
+    .{ .name = "ls", .description = "List files (optional directory path)", .category = "fs", .listed = true },
+    .{ .name = "mkdir", .description = "Create a directory", .category = "fs", .listed = true },
     .{ .name = "create", .description = "Create an empty file", .category = "fs", .listed = true },
-    .{ .name = "delete", .description = "Delete a file", .category = "fs", .listed = true },
+    .{ .name = "delete", .description = "Delete a file or dir (-dir)", .category = "fs", .listed = true },
     .{ .name = "rename", .description = "Rename a file", .category = "fs", .listed = true },
     .{ .name = "view", .description = "Display file contents", .category = "fs", .listed = true },
     .{ .name = "edit", .description = "Edit file contents", .category = "fs", .listed = true },

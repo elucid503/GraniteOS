@@ -7,7 +7,7 @@ export fn _start(argc: usize, argv: [*]const ?[*:0]const u8) noreturn {
 
     if (argc < 2) {
 
-        io.println("Usage: create <filename>");
+        io.println("Usage: create <path>");
         sys.exit(1);
 
     }

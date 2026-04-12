@@ -16,7 +16,7 @@ export fn _start() noreturn {
 
     while (true) {
 
-        io.print("basalt> ");
+        print_prompt();
 
         const line = read_line_echo(&line_buf);
 
@@ -93,11 +93,133 @@ fn execute(line: []const u8) void {
 
     if (stage_count == 1) {
 
+        if (try_builtin(stages[0])) return;
+
         run_single(stages[0]);
 
     } else {
 
         run_pipeline(stages[0..stage_count]);
+
+    }
+
+}
+
+/// Handles `cd` and `path` in the shell process (must not fork).
+fn try_builtin(line: []const u8) bool {
+
+    const t = trim(line);
+
+    if (str_eql(t, "path")) {
+
+        builtin_path();
+        return true;
+
+    }
+
+    if (t.len < 2 or t[0] != 'c' or t[1] != 'd') return false;
+
+    if (t.len == 2) {
+
+        builtin_cd("");
+        return true;
+
+    }
+
+    if (t[2] != ' ') return false;
+
+    builtin_cd(trim(t[3..]));
+    return true;
+
+}
+
+fn builtin_path() void {
+
+    var buf: [256]u8 = undefined;
+    const n = sys.getcwd(&buf);
+
+    if (n < 0) {
+
+        io.println("path: cannot read current directory");
+        return;
+
+    }
+
+    const len: usize = @intCast(n);
+
+    if (len <= 1) {
+
+        io.println("/");
+        return;
+
+    }
+
+    io.println(buf[0 .. len - 1]);
+
+}
+
+/// `basalt [cwd]> ` using the kernel working directory for this process.
+fn print_prompt() void {
+
+    var cwd_buf: [256]u8 = undefined;
+    const n = sys.getcwd(&cwd_buf);
+
+    io.print("basalt ");
+
+    if (n < 0) {
+
+        io.print("[?]");
+
+    } else {
+
+        const len: usize = @intCast(n);
+
+        if (len <= 1) {
+
+            io.print("[/]");
+
+        } else {
+
+            io.print("[");
+            io.print(cwd_buf[0 .. len - 1]);
+            io.print("]");
+
+        }
+
+    }
+
+    io.print("> ");
+
+}
+
+fn builtin_cd(arg: []const u8) void {
+
+    var path_buf: [MAX_LINE]u8 = undefined;
+
+    if (arg.len == 0) {
+
+        path_buf[0] = '/';
+        path_buf[1] = 0;
+
+    } else {
+
+        if (arg.len + 1 > path_buf.len) {
+
+            io.println("cd: path too long");
+            return;
+
+        }
+
+        @memcpy(path_buf[0..arg.len], arg);
+        path_buf[arg.len] = 0;
+
+    }
+
+    const r = sys.chdir(@ptrCast(&path_buf));
+
+    if (r < 0) {
+
+        io.println("cd: no such directory or not a directory");
 
     }
 

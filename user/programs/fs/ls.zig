@@ -3,10 +3,19 @@
 const sys = @import("syscall");
 const io = @import("io");
 
-export fn _start() noreturn {
+export fn _start(argc: usize, argv: [*]const ?[*:0]const u8) noreturn {
 
     var buf: [2048]u8 = undefined;
-    const total = sys.listfiles(&buf);
+
+    const dir_arg: ?[*:0]const u8 = if (argc >= 2) argv[1] else null;
+
+    const total = if (dir_arg) |d|
+
+        sys.listfiles_in(&buf, d)
+
+    else
+
+        sys.listfiles(&buf);
 
     if (total == 0) {
 
@@ -15,14 +24,13 @@ export fn _start() noreturn {
 
     }
 
-    // Entries are name\0size_string\0 pairs.
+    // Entries are name\0kind\0size\0 (kind is 'f' or 'd').
 
     var pos: usize = 0;
     var count: usize = 0;
 
     while (pos < total) {
 
-        // Read name.
         const name_start = pos;
 
         while (pos < total and buf[pos] != 0) pos += 1;
@@ -30,7 +38,15 @@ export fn _start() noreturn {
         const name = buf[name_start..pos];
         pos += 1;
 
-        // Read size string.
+        if (pos >= total) break;
+
+        const kind = buf[pos];
+        pos += 1;
+
+        if (pos >= total or buf[pos] != 0) break;
+
+        pos += 1;
+
         const size_start = pos;
 
         while (pos < total and buf[pos] != 0) pos += 1;
@@ -43,7 +59,6 @@ export fn _start() noreturn {
         io.print("  ");
         io.print(name);
 
-        // Pad name to 20 chars.
         var padding: usize = 0;
 
         while (padding + name.len < 20) : (padding += 1) {
@@ -51,8 +66,17 @@ export fn _start() noreturn {
         }
 
         io.print("  ");
-        io.print(size_str);
-        io.println(" bytes");
+
+        if (kind == 'd') {
+
+            io.println("<dir>");
+
+        } else {
+
+            io.print(size_str);
+            io.println(" bytes");
+
+        }
 
         count += 1;
 

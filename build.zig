@@ -14,7 +14,7 @@ pub fn build(b: *std.Build) void {
 
     const optimize = b.standardOptimizeOption(.{});
 
-    // Discovers and builds every *.zig file in user/programs/ and user/programs/testers/.
+    // Discovers and builds every *.zig file under user/programs/* (see scan_dirs).
     // user/lib/ is skipped because it contains no entry points and is only imported by programs.
 
     // Each binary is copied into a WriteFiles directory alongside a generated
@@ -37,7 +37,7 @@ pub fn build(b: *std.Build) void {
     var entries: std.ArrayListUnmanaged(SrcEntry) = .{};
     defer entries.deinit(b.allocator);
 
-    const scan_dirs = [_][]const u8{ "user/programs/global", "user/programs/common", "user/programs/fs", "user/programs/testers" };
+    const scan_dirs = [_][]const u8{ "user/programs/global", "user/programs/common", "user/programs/fs", "user/programs/location", "user/programs/testers" };
 
     for (scan_dirs) |dir_rel| {
 
@@ -77,17 +77,23 @@ pub fn build(b: *std.Build) void {
     }.lt);
 
     const syscall_mod = b.createModule(.{
+
         .root_source_file = b.path("user/lib/syscall.zig"),
+
     });
 
     const io_mod = b.createModule(.{
+
         .root_source_file = b.path("user/lib/io.zig"),
+
     });
 
     io_mod.addImport("syscall", syscall_mod);
 
     const mem_mod = b.createModule(.{
+
         .root_source_file = b.path("user/lib/mem.zig"),
+
     });
 
     mem_mod.addImport("syscall", syscall_mod);

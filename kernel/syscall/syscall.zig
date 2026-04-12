@@ -33,6 +33,10 @@ const SYS_RENAME: u64 = 19;
 const SYS_LISTFILES: u64 = 20;
 const SYS_SYSINFO: u64 = 21;
 const SYS_CHMOD: u64 = 22;
+const SYS_CHDIR: u64 = 23;
+const SYS_MKDIR: u64 = 24;
+const SYS_RMDIR: u64 = 25;
+const SYS_GETCWD: u64 = 26;
 
 const PAGE_SIZE: usize = 4096;
 
@@ -85,6 +89,10 @@ pub export fn handle_syscall(saved_sp: usize) usize {
         SYS_LISTFILES => frame.x0 = sys_listfiles(frame),
         SYS_SYSINFO => frame.x0 = sys_sysinfo(frame),
         SYS_CHMOD => frame.x0 = sys_chmod(frame),
+        SYS_CHDIR => frame.x0 = sys_chdir(frame),
+        SYS_MKDIR => frame.x0 = sys_mkdir(frame),
+        SYS_RMDIR => frame.x0 = sys_rmdir(frame),
+        SYS_GETCWD => frame.x0 = sys_getcwd(frame),
 
         else => frame.x0 = @bitCast(@as(i64, -38)), // -ENOSYS
 
@@ -347,7 +355,7 @@ fn sys_execve(saved_sp: usize, frame: *Frame) usize {
 
     }
 
-    const elf_bytes = find_program(name) orelse {
+    const elf_bytes = resolve_exec_elf(name) orelse {
 
         frame.x0 = @bitCast(@as(i64, -2)); // ENOENT
         return saved_sp;
@@ -443,7 +451,9 @@ fn sys_create(frame: *Frame) u64 {
     const name_ptr: [*:0]const u8 = @ptrFromInt(frame.x0);
     const name = name_ptr[0..str_len(name_ptr)];
 
-    if (!fs.create_file(name, scheduler.current_process().pid)) {
+    const pcb = scheduler.current_process();
+
+    if (!fs.create_file_path(pcb.fs_cwd, name, pcb.pid)) {
         return @bitCast(@as(i64, -28)); // ENOSPC
     }
 
@@ -596,7 +606,8 @@ fn sys_chmod(frame: *Frame) u64 {
     const anyone_write = frame.x2 != 0;
     const name = name_ptr[0..str_len(name_ptr)];
 
-    const fi = fs.find_file(name) orelse return @bitCast(@as(i64, -2)); // ENOENT
+    const pcb = scheduler.current_process();
+    const fi = fs.find_entry_path(pcb.fs_cwd, name) orelse return @bitCast(@as(i64, -2)); // ENOENT
 
     fs.files[fi].permissions.anyone_read = anyone_read;
     fs.files[fi].permissions.anyone_write = anyone_write;
@@ -611,7 +622,9 @@ fn sys_delete(frame: *Frame) u64 {
     const name_ptr: [*:0]const u8 = @ptrFromInt(frame.x0);
     const name = name_ptr[0..str_len(name_ptr)];
 
-    return @bitCast(@as(i64, fs.delete_file(name, scheduler.current_process().pid)));
+    const pcb = scheduler.current_process();
+
+    return @bitCast(@as(i64, fs.delete_file_path(pcb.fs_cwd, name, pcb.pid)));
 
 }
 
@@ -623,15 +636,76 @@ fn sys_rename(frame: *Frame) u64 {
     const old_name = old_ptr[0..str_len(old_ptr)];
     const new_name = new_ptr[0..str_len(new_ptr)];
 
-    return @bitCast(@as(i64, fs.rename_file(old_name, new_name, scheduler.current_process().pid)));
+    const pcb = scheduler.current_process();
+
+    return @bitCast(@as(i64, fs.rename_path(pcb.fs_cwd, old_name, new_name, pcb.pid)));
 
 }
 
-// listfiles(buf, size) -> bytes written. Writes name\0size_string\0 pairs.
+// listfiles(buf, size, path?) -> bytes written. path null (x2=0) lists cwd.
+// Writes name\0'f'|'d'\0size_string\0 per entry.
 fn sys_listfiles(frame: *Frame) u64 {
 
+    const pcb = scheduler.current_process();
     const buf: [*]u8 = @ptrFromInt(frame.x0);
-    return fs.list_files(buf, frame.x1);
+    const size = frame.x1;
+    const path_ptr = frame.x2;
+
+    const dir_ref: u8 = blk: {
+
+        if (path_ptr == 0) break :blk pcb.fs_cwd;
+
+        const path_z: [*:0]const u8 = @ptrFromInt(path_ptr);
+        const path_slice = path_z[0..str_len(path_z)];
+
+        break :blk fs.resolve_dir_for_list(pcb.fs_cwd, path_slice) orelse return 0;
+
+    };
+
+    return fs.list_dir(buf, size, dir_ref);
+
+}
+
+fn sys_chdir(frame: *Frame) u64 {
+
+    const path_ptr: [*:0]const u8 = @ptrFromInt(frame.x0);
+    const path = path_ptr[0..str_len(path_ptr)];
+
+    return @bitCast(@as(i64, fs.chdir(scheduler.current_process(), path)));
+
+}
+
+fn sys_mkdir(frame: *Frame) u64 {
+
+    const name_ptr: [*:0]const u8 = @ptrFromInt(frame.x0);
+    const name = name_ptr[0..str_len(name_ptr)];
+    const pcb = scheduler.current_process();
+
+    if (!fs.mkdir_path(pcb.fs_cwd, name, pcb.pid)) {
+        return @bitCast(@as(i64, -28)); // ENOSPC / exists
+    }
+
+    return 0;
+
+}
+
+fn sys_rmdir(frame: *Frame) u64 {
+
+    const name_ptr: [*:0]const u8 = @ptrFromInt(frame.x0);
+    const name = name_ptr[0..str_len(name_ptr)];
+    const pcb = scheduler.current_process();
+
+    return @bitCast(@as(i64, fs.rmdir_path(pcb.fs_cwd, name, pcb.pid, pcb.fs_cwd)));
+
+}
+
+fn sys_getcwd(frame: *Frame) u64 {
+
+    const pcb = scheduler.current_process();
+    const buf: [*]u8 = @ptrFromInt(frame.x0);
+    const size = frame.x1;
+
+    return @bitCast(@as(i64, fs.getcwd(pcb, buf, size)));
 
 }
 
@@ -774,6 +848,28 @@ const BufWriter = struct {
     }
 
 };
+
+/// Resolve an ELF image for execve: ramfs `/programs/...`, then embedded name, then `/programs/<basename>` for bare names.
+fn resolve_exec_elf(path: []const u8) ?[]const u8 {
+
+    const pcb = scheduler.current_process();
+
+    if (fs.resolve_program_elf_from_path(pcb.fs_cwd, path)) |elf| return elf;
+
+    if (find_program(path)) |elf| return elf;
+
+    if (std.mem.indexOfScalar(u8, path, '/') == null) {
+
+        var buf: [48]u8 = undefined;
+        const printed = std.fmt.bufPrint(&buf, "/programs/{s}", .{path}) catch return null;
+
+        return fs.resolve_program_elf_from_path(fs.ROOT_DIR, printed);
+
+    }
+
+    return null;
+
+}
 
 fn find_program(name: []const u8) ?[]const u8 {
 

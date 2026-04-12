@@ -61,6 +61,9 @@ pub const PCB = struct {
     stdin_pipe: i8 = -1,
     stdout_pipe: i8 = -1,
 
+    /// Current directory: logical root (`0xFF`) or a directory inode index in the ramfs table.
+    fs_cwd: u8 = 0xFF,
+
     // Signal state
 
     pending_signals: u8 = 0,
@@ -297,6 +300,7 @@ pub fn fork_user_task(parent_frame_sp: usize, child_l0: usize) ?u32 {
         .file_descriptors     = parent.file_descriptors,
         .stdin_pipe           = parent.stdin_pipe,
         .stdout_pipe          = parent.stdout_pipe,
+        .fs_cwd               = parent.fs_cwd,
         .signal_handlers      = parent.signal_handlers,
         .kernel_stack         = undefined,
 
