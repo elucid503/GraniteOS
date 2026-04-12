@@ -35,7 +35,7 @@ pub const programs: []const Entry = &.{
     .{ .name = "rename", .description = "Rename a file", .category = "fs", .listed = true },
     .{ .name = "view", .description = "Display file contents", .category = "fs", .listed = true },
     .{ .name = "edit", .description = "Edit file contents", .category = "fs", .listed = true },
-    .{ .name = "own", .description = "Set file permissions", .category = "fs", .listed = true },
+    .{ .name = "own", .description = "Own a file", .category = "fs", .listed = true },
 
     // Testers (unlisted)
 

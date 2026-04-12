@@ -10,7 +10,7 @@ const MAX_ARGS: usize = 16;
 export fn _start() noreturn {
 
     io.println("BASALT ......... Ready");
-    io.println("Type 'help' for available commands, 'exit' to quit.\r\n");
+    io.println("Type 'help' for available commands, 'exit' to relaunch.\r\n");
 
     var line_buf: [MAX_LINE]u8 = undefined;
 
