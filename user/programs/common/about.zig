@@ -6,7 +6,12 @@ const io = @import("io");
 export fn _start() noreturn {
 
     io.println("");
-    io.println("GraniteOS");
+    io.println("  ______                 _ __       ____  _____");
+    io.println(" / ____/________ _____  (_) /____  / __ \\/ ___/");
+    io.println("/ / __/ ___/ __ `/ __ \\/ / __/ _ \\/ / / /\\__ \\ ");
+    io.println("/ /_/ / /  / /_/ / / / / / /_/  __/ /_/ /___/ / ");
+    io.println("\\____/_/   \\__,_/_/ /_/_/\\__/\\___/\\____//____/  ");
+    io.println("");
     io.println("A minimal ARM64 operating system built from scratch in Zig.\r\n");
 
     io.println("Features:");

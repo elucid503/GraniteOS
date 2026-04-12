@@ -370,7 +370,8 @@ fn advance_to_next() usize {
 
     while (tries < process_count) : (tries += 1) {
 
-        if (processes[next].state == .ready) {
+        // Skips process 0 (idle). we only use it as a last resort.
+        if (next != 0 and processes[next].state == .ready) {
 
             current_index = next;
 
@@ -385,7 +386,7 @@ fn advance_to_next() usize {
 
     }
 
-    // No ready process - idle on process 0.
+    // No ready user process - idle on process 0.
 
     current_index = 0;
     processes[0].state = .running;
