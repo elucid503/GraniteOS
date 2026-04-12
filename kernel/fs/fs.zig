@@ -188,7 +188,7 @@ pub fn resolve_program_elf_from_path(cwd: u8, path: []const u8) ?[]const u8 {
 /// Create a new empty file in `parent` (use `ROOT_DIR` or a directory inode index). Returns true on success.
 pub fn create_file_in(parent: u8, name: []const u8, owner: u32) bool {
 
-    if (name.len == 0 or name.len > MAX_NAME) return false;
+    if (!is_valid_name(name)) return false;
     if (!is_valid_parent(parent)) return false;
     if (find_child_any(parent, name) != null) return false;
 
@@ -218,10 +218,19 @@ pub fn create_file_in(parent: u8, name: []const u8, owner: u32) bool {
 
 }
 
+fn is_valid_name(name: []const u8) bool {
+
+    if (name.len == 0 or name.len > MAX_NAME) return false;
+    if (str_eql(name, ".") or str_eql(name, "..")) return false;
+
+    return true;
+
+}
+
 /// Create an empty directory under `parent`. Returns true on success.
 pub fn mkdir_in(parent: u8, name: []const u8, owner: u32) bool {
 
-    if (name.len == 0 or name.len > MAX_NAME) return false;
+    if (!is_valid_name(name)) return false;
     if (!is_valid_parent(parent)) return false;
     if (find_child_any(parent, name) != null) return false;
 
@@ -646,7 +655,7 @@ pub fn rename_path(cwd: u8, old_path: []const u8, new_path: []const u8, caller_p
     if (entry.owner != caller_pid) return -13;
 
     const new_loc = resolve_parent_and_basename(cwd, new_path) orelse return -22;
-    if (new_loc.basename.len == 0 or new_loc.basename.len > MAX_NAME) return -22;
+    if (!is_valid_name(new_loc.basename)) return -22;
     if (!is_valid_parent(new_loc.parent)) return -22;
 
     if (find_child_any(new_loc.parent, new_loc.basename)) |existing| {
