@@ -1,332 +1,336 @@
 # GraniteOS
 
-A proof-of-concept operating system targeting ARM64. The bootloader is written in ARM64 assembly; the kernel is written in Zig. All development and testing runs under QEMU on a Linux host.
+An ARM64 operating system ran on top of QEMU, written in Zig (kernel) and ARM64 assembly (bootloader), with an implementation of virtual memory, process scheduling, exception handling, syscalls, ELF loading, and interprocess communication.
 
----
+## Overview
 
-## Design Goals
+GraniteOS boots on QEMU's `virt` machine, runs a full shell environment with user programs, and supports multiprocess execution with pipes and signals. The kernel is minimal but complete with no unnecessary abstractions. Every component serves a concrete purpose.
 
-- Minimal, readable, well-structured code
-- Sufficient to boot, run user processes, and demonstrate core OS concepts
-- No unnecessary abstractions - complexity is added only when required
+**Target Platform:** ARM64 (AArch64) on QEMU  
+**Kernel:** ~2,000 lines of Zig  
+**Bootloader:** ~300 lines of ARM64 assembly  
+**User Space:** ~1,500 lines of Zig (shell, utilities, testers)
 
----
+## Quick Start
 
-## Component Requirements
+### Build
 
-### 1. Bootloader (ARM64 Assembly)
+```bash
+zig build
+```
 
-**Responsibility:** Bring the hardware to a state where the Zig kernel can execute.
+Builds the kernel with all embedded user programs. The build system automatically discovers and compiles all programs in `user/programs/*`.
 
-- Execute at EL1 (or drop from EL2 if QEMU starts there)
-- Zero-initialize BSS segment
-- Set up the initial stack pointer
-- Configure UART for early debug output
-- Enable the MMU with a minimal identity-mapped page table (so the kernel can set up its own)
-- Jump to the Zig kernel entry point (`kmain`)
+### Run
 
-**Files:** `boot/start.S`, `boot/linker.ld`
+```bash
+zig build qemu
+```
 
----
+Boots GraniteOS in QEMU. You'll see the SLATE launcher, which immediately spawns the BASALT shell.
 
-### 2. Memory Management
+## Important User Binaries
 
-**Virtual Memory (required)**
+1. SLATE - System Launch And Task Executor
+2. BASALT - Basic Adaptive Shell And Lightweight Terminal
 
-- Identity-map physical memory during boot so early kernel code can run before the full page tables are ready
-- Set up a kernel page table using 4KB pages across a 48-bit virtual address space
-- Separate kernel and user address spaces: kernel lives at the top of the address space (high addresses), user processes at the bottom (low addresses). ARM64 uses two page table registers - one for each half - so the split is hardware-enforced with no overlap
-- Page fault handler to catch invalid memory accesses and panic cleanly rather than silently corrupting state
+## Architecture
+
+### Boot Sequence
+
+1. **ARM64 Bootloader** (`boot/start.S`)
+   - Halts all cores except core 0
+   - Drops from EL2 to EL1 if needed
+   - Zero-es out BSS segment
+   - Builds two-level page tables:
+     - L0 table (single entry)
+     - L1 table (device memory block + L2 table pointer)
+     - L2 table (512 × 2MB blocks for kernel and user space)
+   - Enables MMU with identity mapping
+   - Jumps to kernel entry point (`kmain`)
+
+2. **Kernel Initialization** (`kernel/kmain.zig`)
+   - Initializes UART (console I/O)
+   - Initializes physical memory allocator
+   - Initializes kernel heap
+   - Initializes file system
+   - Initializes GIC (interrupt controller)
+   - Starts timer (100ms ticks)
+   - Spawns first user process (SLATE)
+   - Enables interrupts
+
+### Memory Management
+
+**Virtual Address Space**
+- Kernel (high half): 0x4000_0000 – 0x7FFF_FFFF (identity-mapped, is read-only for EL0, as it should be)
+- User (low half): 0x0000_0000 – 0x3FFF_FFFF (per-process, has no kernel visibility)
+- Hardware logically enforces split via separate user and kernel registers
 
 **Physical Allocator**
+- Bitmap-based allocator over available RAM
+- 4KB pages, with up to 256MB of RAM (this is configurable)
+- Efficient alloc/free with fragmentation tracking
 
-- Bitmap or free-list allocator over available RAM
-- `alloc_page()` / `free_page()` primitives
-- No dynamic allocator needed early on; add a slab/pool allocator once processes are running
+**Page Tables**
+- 4-level hierarchical translation (L0, L1, L2, L3)
+- Per-process L0 table is created on fork
+- Kernel regions are shared and marked non-global so TLB flushes don't affect them
+- User regions deliberately marked non-global for ensuring TLB invalidation on context switch
 
-**Kernel Heap**
-
-- Simple bump allocator initially
-- Upgrade to a free-list allocator (e.g. TLSF) once fragmentation becomes a problem
-
----
-
-### 3. Interrupts and Exceptions
-
-- Set up the ARM64 exception vector table (`VBAR_EL1`)
-- Handle the four exception classes: synchronous, IRQ, FIQ, SError - for both EL0 and EL1
-- Configure the GIC (Generic Interrupt Controller) for QEMU's `virt` machine
-- Timer interrupt via ARM generic timer (`CNTP_CTL_EL0`) - drives the scheduler
-- Syscall entry via `svc #0` (synchronous exception from EL0)
-
----
-
-### 4. Scheduler
-
-**Algorithm: Round Robin**
-
-Round Robin is the right call for a PoC. It is simple, fair, and trivially correct. The only upgrade worth considering later is **Multi-Level Feedback Queue (MLFQ)**, which automatically handles the interactive vs. batch trade-off without requiring per-process priority tuning. Defer that until it is needed.
+### Processes and Scheduling
 
 **Process Control Block (PCB)**
 
-Each process has a PCB - a kernel-side record of everything needed to pause and resume it. It holds:
+Each process contains:
+- PID, parent PID, exit code
+- State: ready, running, blocked, or zombie
+- 31 general-purpose registers (x0–x30)
+- Program counter and stack pointer (saved on preemption)
+- Processor state register (ELR_EL1, SPSR_EL1)
+- User page table pointer
+- Kernel stack (8KB per process)
+- File descriptor table
+- Signal handler table
 
-- **Process ID** - unique numeric identifier for this process
-- **State** - one of: Ready (waiting for CPU), Running (currently executing), Blocked (waiting on I/O or a lock), or Zombie (exited but not yet cleaned up by parent)
-- **General-purpose registers** - the 31 CPU registers (x0–x30) saved when the process is preempted
-- **Stack pointer** - the user-space stack position at the time of preemption
-- **Program counter** - where to resume execution
-- **Processor state** - CPU flags and mode bits (condition codes, interrupt mask, etc.)
-- **Page table pointer** - the process's own virtual memory map, swapped in on every context switch
-- **Kernel stack pointer** - a separate stack used while handling syscalls and exceptions on behalf of this process
-- **Parent PID** - which process spawned this one (needed for `wait`/`exit`)
-- **Exit code** - the value passed to `exit()`, held until the parent reads it
+**Scheduler**
+- Round-robin algorithm with a 100ms time quantum
+- Circular ready process queue
+- Processes enter queue when ready, leave when blocked or exit
+- Context switch: saves current registers into PCB, restores next process, swaps page table, flushes TLB
 
-**Context Switch**
+**System Calls**
 
-- When the timer fires: save the current process's CPU registers into its PCB, select the next process from the queue, restore its registers, and return - from that process's perspective, it never stopped
-- The user-space page table must be swapped on every context switch so each process sees only its own memory
-- After swapping the page table, the CPU's translation cache (TLB) must be flushed, otherwise stale address mappings from the previous process will linger and cause incorrect memory accesses
+26 (non-POSIX) syscalls implement the core OS interface:
 
-**Scheduling Queue**
+| Num | Name | Purpose |
+|-----|------|---------|
+| 1 | write | Write to file descriptor |
+| 2 | read | Read from file descriptor |
+| 3 | exit | Terminate process |
+| 4 | getpid | Get process ID |
+| 5 | fork | Clone current process |
+| 6 | execve | Load and run new binary |
+| 7 | brk | Grow/shrink heap |
+| 8 | wait4 | Wait for child process |
+| 9 | open | Open file |
+| 10 | close | Close file descriptor |
+| 11 | pipe | Create pipe |
+| 12 | create | Create file |
+| 13 | kill | Send signal to process |
+| 14 | sigaction | Install signal handler |
+| 15 | sigreturn | Return from signal handler |
+| 16 | dup2 | Duplicate file descriptor |
+| 17 | listprogs | List available programs |
+| 18 | delete | Delete file |
+| 19 | rename | Rename file |
+| 20 | listfiles | List files in directory |
+| 21 | sysinfo | Get system info |
+| 22 | chmod | Change file permissions |
+| 23 | chdir | Change directory |
+| 24 | mkdir | Create directory |
+| 25 | rmdir | Remove directory |
+| 26 | getcwd | Get current working directory |
 
-- Circular queue of ready PCBs
-- Blocked processes removed from queue, re-added when unblocked
+Syscalls enter via `svc #0` exception from EL0, dispatched in `kernel/syscall/syscall.zig`.
 
----
+### Exception Handling
 
-### 5. System Calls
+**Vector Table** (`boot/vectors.S`)
+- 16 exception entry points (4 types × 4 contexts)
+- Each handler has 128 bytes (common practice on ARM64)
+- Saves full CPU state (31 registers + ELR + SPSR + SP_EL0) into 272-byte frame
 
-The syscall calling convention mirrors Linux on AArch64 - this means standard toolchains and libc ports work without modification. When a process issues a syscall, it places the syscall number in register `x8`, up to six arguments in `x0` through `x5`, and reads the return value back from `x0` after the kernel returns.
+**Exception Types**
+- Synchronous: syscalls, page faults, instruction errors
+- IRQ: timer, GIC-routed interrupts
+- FIQ: fast interrupts (unused here)
+- SError: system errors (unused here)
 
-**Required syscalls to support user binaries:**
+**Key Handlers**
+- `_el0_sync`: Syscall dispatch; page fault panic
+- `_el0_irq`: Timer preempts user process, triggers context switch
+- `_el1_irq`: Kernel running; typically a bug (would indicate nested interrupt)
 
-| Number | Name       | Description                        |
-|--------|------------|------------------------------------|
-| 1      | `write`    | Write bytes to a file descriptor   |
-| 3      | `close`    | Close a file descriptor            |
-| 56     | `openat`   | Open a file                        |
-| 57     | `close`    | (alias)                            |
-| 63     | `read`     | Read bytes from a file descriptor  |
-| 93     | `exit`     | Terminate current process          |
-| 172    | `getpid`   | Return current PID                 |
-| 214    | `brk`      | Grow/shrink the heap               |
-| 220    | `clone`    | Create a new process (fork-like)   |
-| 221    | `execve`   | Replace process image with ELF     |
-| 260    | `wait4`    | Wait for a child process           |
+### File System
 
-Start with `write`, `exit`, `getpid`, and `brk`. Add the rest as needed.
+**In-Memory Hierarchical FS** (`kernel/fs/fs.zig`)
+- Up to 64 files/directories supported (is configurable, but depends on RAM size)
+- Flat namespace with directory support (parent pointers)
+- File kinds: empty, file, directory, program (embedded binary)
+- Permissions: owner read/write, anyone read/write
+- Max file size: 4KB (also configurable)
 
----
+**Embedded Programs**
+- User programs are compiled to ELF and embedded into the kernel via `@embedFile` at build time
+- File system exposes them as entries under `/programs/`
+- Accessible via the `listprogs` syscall
+- Registry in kernel tracks program metadata (name, size, permissions)
 
-### 6. Process Loading (ELF)
+**Pipes**
+- Buffer-driven (4KB capacity)
+- Reader/writer reference counts
+- Blocks reader if empty, blocks writer if full
+- Created via `pipe` syscall, used with `fork` and `exec` for shell pipelines
 
-To support running custom binaries:
+### Signals
 
-- Parse ELF64 headers (check magic, architecture, entry point)
-- Load `PT_LOAD` segments into freshly-allocated user pages with correct permissions (R/W/X)
-- Map a user stack (fixed address, e.g. `0x0000_7FFF_F000_0000`, growing down)
-- Set `PC = e_entry`, `SP = top of user stack`
-- Switch to EL0 and jump
+**Minimal Signal Support** (`kernel/signal/signal.zig`)
+- 4 signals max per process: SIGCHLD, SIGTERM, SIGKILL, custom
+- Handler: kernel-space or user-space with signal frame injection
+- Restores user state via `sigreturn` syscall after handler runs
 
-**ELF Loader steps:**
+### Drivers
 
-1. Read and validate the ELF header - check the magic bytes, confirm it's a 64-bit ARM binary, and extract the entry point address
-2. For each loadable segment: allocate fresh pages, copy the segment data in, and apply the correct permissions (read, write, or execute)
-3. Allocate and map a user stack at a fixed high address, growing downward
-4. Set up the initial stack frame with argc, argv, and envp - these can be empty or zeroed for a PoC
-5. Return to user space at the entry point via `eret`
+**UART** (`kernel/drivers/uart.zig`)
+- PL011 UART at address 0x09000000
+- Prints kernel messages and handles console I/O
+- `write(1, ...)` syscalls route here
 
----
+**GIC** (`kernel/drivers/gic.zig`)
+- ARM Generic Interrupt Controller (v2/v3 compatible)
+- Configures timer interrupt line
+- Routes interrupts to CPU
 
-### 7. File System (Minimal)
+**Timer** (`kernel/scheduler/timer.zig`)
+- ARM generic timer (CNTP_TVAL_EL0)
+- 100ms period, triggers scheduler context switch
+- Interrupt-driven, no polling
 
-A full VFS is a lot of work. For a PoC, a **ramfs** (in-memory filesystem) is sufficient:
+## Building User Programs
 
-- Fixed array or linked list of files, each with a name and a byte buffer
-- `open`, `read`, `write`, `close` map to this structure
-- No directories required initially (flat namespace)
-- Binaries are embedded in the kernel image (via `@embedFile` in Zig) or loaded from a simple initrd
+User programs live in `user/programs/` under category directories. Each `.zig` file becomes an executable.
 
-Later, add a real disk-backed filesystem (e.g. FAT32 or a custom format) once VirtIO block support is added.
+**Available Programs**
 
----
+**Global:**
+- `slate`: System launcher (spawns shell, restarts if it exits)
+- `basalt`: Interactive shell with pipe support
 
-### 8. User/Kernel Mode Switching
+**Common:**
+- `echo`: Print arguments
+- `hello`: Print "Hello, World!"
+- `help`: List available commands
+- `about`: OS information
+- `status`: Show system status
+- `clear`: Clear screen
+- `cat`: Display file contents
+- `wc`: Word/line count
 
-- User processes run at privilege level EL0 (unprivileged); the kernel runs at EL1
-- Entering the kernel happens via `svc #0` for syscalls, or automatically on any exception or interrupt
-- Returning to user space uses the `eret` instruction, which atomically restores the saved program counter and processor state - there is no way for user code to fake this
-- Each process has its own dedicated kernel stack, used only while the kernel is handling an exception or syscall on that process's behalf
-- The hardware maintains two separate stack pointers: one for user space (EL0) and one for the kernel (EL1), so they never interfere
+**File System:**
+- `ls`: List directory
+- `mkdir`: Create directory
+- `create`: Create file
+- `edit`: Edit file contents
+- `view`: View file
+- `delete`: Remove file
+- `rename`: Rename file
+- `own`: Change file owner
+- `chmod`: Change permissions
 
----
+**Location:**
+- `path`: Show current directory
 
-### 9. IPC (Inter-Process Communication)
+**Testers:**
+- `fork_test`: Stress test forking
+- `sched_test`: Test scheduler (round-robin verification)
+- `pipe_test`: Test pipes and I/O
+- `signal_test`: Test signals
 
-Start simple. The minimum viable set:
+All programs link against the user library (`user/lib/`):
+- `syscall.zig`: Raw syscall wrappers
+- `io.zig`: Print, read line, formatting
+- `mem.zig`: Simple allocator for user space
 
-**Pipes (first)**
-- Kernel-managed ring buffer
-- Two file descriptors (read end, write end)
-- Blocked read if buffer empty; blocked write if buffer full
-- Fits naturally into the fd/syscall model already needed
+## Shell (BASALT)
 
-**Shared Memory (later)**
-- `mmap`-style syscall to map a named region into two processes' address spaces
-- Requires careful TLB and cache management on ARM64
-- Add only after pipes are working
+Basic Adaptive Shell And Lightweight Terminal (BASALT) is a lightweight shell supporting:
 
-**Signals (later)**
-- Async notification mechanism
-- Required to make `wait`/`exit` work cleanly across processes
-- Minimum: `SIGCHLD`, `SIGKILL`, `SIGTERM`
+- **Command execution:** Type a program name and press Enter
+- **Pipes:** `cmd1 | cmd2 | cmd3` (fully functional)
+- **Builtins:**
+  - `help` – show available programs
+  - `path` – show current directory
+  - `cd DIR` – change directory
+  - `exit` – quit shell
+- **Output redirection:** Not yet supported
 
----
+Commands fork, exec the binary from the file system, and wait for completion.
 
-### 10. Multicore Support
+## Other Commentary
 
-For a PoC, start single-core. Multicore adds significant complexity:
+### Bootloader Design
 
-- Each core needs its own exception vectors, stack, and GIC CPU interface
-- The scheduler needs a run queue per core plus work-stealing or migration
-- All shared kernel data structures need spinlocks (`ldaxr`/`stlxr` on ARM64)
-- Memory ordering: ARM64 is weakly ordered - `dmb`, `dsb`, `isb` barriers required at correct points
+The two-level page table in assembly (`boot/start.S`) is built once and reused:
+- L0 (4KB): single entry pointing to L1
+- L1 (4KB): first entry is 1GB device block; second entry points to L2
+- L2 (4KB): 512 x 2MB blocks for kernel (UXN, no EL0 execution) and user (PXN, no EL1 execution)
 
-**Recommended approach:** bring up a second core only after the single-core kernel is stable. Use `PSCI` (via QEMU) to bring secondary cores online.
+This gives fine-grained control: kernel code is executable by EL1 only, user code is executable by EL0 only.
 
----
+### Per-Process Page Tables
 
-### 11. CLI / Shell
+When a process is created (fork or execve), the kernel:
+1. Clones the boot L2 table
+2. Creates a new L0 that points to the cloned L2
+3. Swaps in its own L0 on context switch
+4. Ensures shared kernel regions (marked non-global) are TLB-flushed efficiently
 
-A minimal shell is sufficient for a PoC:
+### Exception Frame Design
 
-- UART-backed terminal (reads chars, echoes them)
-- Line buffering with backspace support
-- `fork` + `exec` on Enter: look up binary in ramfs, load and run it
-- Built-ins: `help`, `ls`, `clear`, `exit`
+A single 272-byte frame layout for all exceptions (defined in `boot/vectors.S`, mirrored in Zig structs):
+- Saves all 31 registers + 3 control registers
+- Is aligned for efficient loading/storing
+- Syscall handlers read frame pointer from SP_EL1, extract arguments from x0–x5
 
-No job control, no pipes in the shell (even if kernel supports them) - keep it minimal.
+### Syscall Dispatch
 
----
+Custom syscall numbers (1–26) defined in `user/lib/syscall.zig` and `kernel/syscall/syscall.zig` for clarity. While syscall numbers aren't POSIX compliant, the register calling convention matches ARM64 ABI: syscall number in x8, up to 6 args in x0–x5, return value in x0.
 
-### 12. Drivers (Minimal Set)
+### ELF Loading
 
-| Driver            | Purpose                          | QEMU device         |
-|-------------------|----------------------------------|---------------------|
-| PL011 UART        | Serial console I/O               | `virt` default UART |
-| ARM Generic Timer | Scheduling timer interrupt       | Built into CPU      |
-| GICv2/v3          | Interrupt controller             | `virt` GIC          |
-| VirtIO Block      | Disk access (later)              | `-drive` + VirtIO   |
+Fully compliant ELF64 AArch64 loader (`kernel/process/elf_loader.zig`):
+- Validates magic bytes, architecture of binary, the executable flag
+- Loads `PT_LOAD` segments into user pages with correct permissions
+- Allocates and maps user stack (8KB, grows downward)
+- Sets up stack frame with argument count and vector
+- Returns to user space at entry point
+- Entry point is _start(), not main()
 
----
+## Development Notes
 
-## End-to-End: Supporting Custom Binaries
+### Adding a New Program
 
-This is the full chain required before a user-compiled binary can run on GraniteOS:
+1. Create `user/programs/CATEGORY/myprogram.zig`
+2. Implement `export fn _start() noreturn { ... }` or `export fn _start(argc, argv) noreturn { ... }`
+3. Run `zig build` – it will auto-discover and put it into the file system
+4. Test via shell: `myprogram`
 
-```
-1. User compiles a C or Zig program targeting aarch64-freestanding
-   -> produces an ELF64 binary
+### Testing
 
-2. Binary is placed into the ramfs image
-   (embedded in kernel at build time, or loaded from initrd)
-
-3. Shell calls fork() -> child calls execve("/programs/hello", ...)
-
-4. Kernel execve handler:
-   a. Loads ELF: allocates user pages, copies segments
-   b. Sets up user stack with argc/argv
-   c. Creates/updates PCB with new PC, SP, page table
-   d. Returns to EL0 at ELF entry point
-
-5. Process runs in user space, making syscalls via svc #0
-
-6. Process calls exit(0) -> kernel marks PCB as Zombie
-   -> parent's wait4() is unblocked -> PCB freed
-
-7. Shell prints prompt again
-```
-
-**Minimum kernel features required before step 3 works:**
-- Virtual memory (user address space)
-- ELF loader
-- Syscalls: `exit`, `write`, `brk` (for malloc in libc)
-- UART driver (so `write(1, ...)` produces output)
-- Scheduler (so the process actually gets CPU time)
-
----
-
-## Development Milestones
-
-| Milestone | Goal                                                    |
-|-----------|---------------------------------------------------------|
-| M1        | Boot in QEMU, print "Hello" over UART                   |
-| M2        | Exception vectors, timer IRQ, basic scheduler (no user) |
-| M3        | Virtual memory, kernel heap                             |
-| M4        | EL0 switch, run a hardcoded user function               |
-| M5        | ELF loader, run a compiled binary                       |
-| M6        | Syscalls: write, exit, brk                              |
-| M7        | Ramfs, shell, fork/exec                                 |
-| M8        | Pipes, signals, wait/exit                               |
-| M9        | VirtIO block, FAT32 (optional)                          |
-| M10       | Second core (optional)                                  |
-
----
-
-## Toolchain Setup
-
-### Install Zig
-
+Can run test programs to verify core functionality:
 ```bash
-# Download latest stable Zig (0.13.x or later)
-wget https://ziglang.org/download/0.14.0/zig-linux-x86_64-0.14.0.tar.xz
-tar -xf zig-linux-x86_64-0.14.0.tar.xz
-sudo mv zig-linux-x86_64-0.14.0 /opt/zig
-echo 'export PATH="/opt/zig:$PATH"' >> ~/.bashrc
-source ~/.bashrc
-zig version
+# In shell, after startup:
+sched_test # Verify round-robin scheduling
+fork_test # Verify fork and process isolation
+pipe_test # Verify pipes and redirection
+signal_test # Verify signal delivery
 ```
 
-### Cross-Compile Target
+### Performance
 
-Zig has built-in cross-compilation. For the kernel:
+- Timer-driven scheduling (100ms quantum)
+- Efficient TLB invalidation via non-global page bit
+- No dynamic allocation in hot paths (allocator only used at boot)
+- Bitmap-based physical allocator (O(1) fragmentation check)
 
-```bash
-zig build-exe kernel.zig \
-  -target aarch64-freestanding-none \
-  -O ReleaseSafe \
-  -T linker.ld
-```
+### Known Limitations
 
-### QEMU Run Command
+- Single core only. Big limitation.
+- No virtual disk; file system is RAM-only
+- Limited memory protection beyond page-level
+- There is no preemption of kernel mode (kernel is not preemptible)
+- Per-process signals are a basic implementation (with only essential ones)
 
-```bash
-qemu-system-aarch64 \
-  -machine virt \
-  -cpu cortex-a57 \
-  -m 256M \
-  -nographic \
-  -kernel kernel.elf \
-  -serial mon:stdio
-```
+## License
 
-### Cross-Assembler (for bootloader)
-
-```bash
-sudo apt install binutils-aarch64-linux-gnu
-aarch64-linux-gnu-as boot/start.S -o boot/start.o
-aarch64-linux-gnu-ld -T boot/linker.ld boot/start.o -o kernel.elf
-```
-
-Or let Zig drive the whole build (including the `.S` file) via `build.zig`.
-
----
-
-## Areas Not Covered Above (Worth Considering)
-
-- **Kernel debugging:** QEMU's `-s -S` flags expose a GDB stub. Use `gdb-multiarch` with an AArch64 target. Set this up before writing any real code.
-- **UART early panic:** A `panic()` function that prints to UART and halts is the single most useful debugging tool in early kernel development.
-- **Stack overflow detection:** Place a guard page (unmapped) below each kernel stack. A stack overflow becomes a clean page fault rather than silent corruption.
-- **KASLR / security:** Not relevant for a PoC - skip entirely.
-- **SMP-safe allocators:** Not needed until M10.
+GraniteOS is a learning project for an Operating Systems course. Not intended for actual use. No license provided.
