@@ -15,6 +15,13 @@ pub const SYS_CREATE: usize = 12;
 pub const SYS_KILL: usize = 13;
 pub const SYS_SIGACTION: usize = 14;
 pub const SYS_SIGRETURN: usize = 15;
+pub const SYS_DUP2: usize = 16;
+pub const SYS_LISTPROGS: usize = 17;
+pub const SYS_DELETE: usize = 18;
+pub const SYS_RENAME: usize = 19;
+pub const SYS_LISTFILES: usize = 20;
+pub const SYS_SYSINFO: usize = 21;
+pub const SYS_CHMOD: usize = 22;
 
 pub const STDIN: usize = 0;
 pub const STDOUT: usize = 1;
@@ -83,14 +90,15 @@ pub fn fork() isize {
 }
 
 /// Replace the current process image with the named embedded binary.
-/// argv and envp are unused; pass null for both.
-pub fn execve(path: [*:0]const u8) isize {
+/// argv is a null-terminated array of null-terminated string pointers (or null for no args).
+/// On success the new program receives argc in x0 and argv in x1.
+pub fn execve(path: [*:0]const u8, argv: ?[*]const ?[*:0]const u8) isize {
 
     return @bitCast(raw(.{
 
         .nr = SYS_EXECVE,
         .x0 = @intFromPtr(path),
-        .x1 = 0,
+        .x1 = if (argv) |a| @intFromPtr(a) else 0,
         .x2 = 0,
 
     }));
@@ -159,6 +167,95 @@ pub fn sigreturn() noreturn {
 
     _ = raw(.{ .nr = SYS_SIGRETURN });
     unreachable;
+
+}
+
+/// Redirect stdin (new_fd=0) or stdout (new_fd=1) to a pipe fd.
+/// old_fd must be a pipe descriptor. Returns 0 on success.
+pub fn dup2(old_fd: usize, new_fd: usize) isize {
+
+    return @bitCast(raw(.{
+
+        .nr = SYS_DUP2,
+        .x0 = old_fd,
+        .x1 = new_fd,
+
+    }));
+
+}
+
+/// List embedded program names. Writes null-separated names into buf.
+/// Returns total bytes written.
+pub fn listprogs(buf: []u8) usize {
+
+    return raw(.{
+
+        .nr = SYS_LISTPROGS,
+        .x0 = @intFromPtr(buf.ptr),
+        .x1 = buf.len,
+
+    });
+
+}
+
+/// Delete a file by name. Returns 0 on success, or a negative error code.
+pub fn delete(name: [*:0]const u8) isize {
+
+    return @bitCast(raw(.{ .nr = SYS_DELETE, .x0 = @intFromPtr(name) }));
+
+}
+
+/// Rename a file. Returns 0 on success, or a negative error code.
+pub fn rename(old_name: [*:0]const u8, new_name: [*:0]const u8) isize {
+
+    return @bitCast(raw(.{
+
+        .nr = SYS_RENAME,
+        .x0 = @intFromPtr(old_name),
+        .x1 = @intFromPtr(new_name),
+
+    }));
+
+}
+
+/// List files. Writes name\0size_string\0 pairs into buf. Returns bytes written.
+pub fn listfiles(buf: []u8) usize {
+
+    return raw(.{
+
+        .nr = SYS_LISTFILES,
+        .x0 = @intFromPtr(buf.ptr),
+        .x1 = buf.len,
+
+    });
+
+}
+
+/// Get system info. type: 0=scheduler, 1=memory. Returns bytes written.
+pub fn sysinfo(info_type: usize, buf: []u8) usize {
+
+    return raw(.{
+
+        .nr = SYS_SYSINFO,
+        .x0 = info_type,
+        .x1 = @intFromPtr(buf.ptr),
+        .x2 = buf.len,
+
+    });
+
+}
+
+/// Change file permissions. Sets anyone_read and anyone_write flags.
+pub fn chmod(name: [*:0]const u8, anyone_read: bool, anyone_write: bool) isize {
+
+    return @bitCast(raw(.{
+
+        .nr = SYS_CHMOD,
+        .x0 = @intFromPtr(name),
+        .x1 = if (anyone_read) 1 else 0,
+        .x2 = if (anyone_write) 1 else 0,
+
+    }));
 
 }
 

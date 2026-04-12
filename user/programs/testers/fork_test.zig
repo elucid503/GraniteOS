@@ -71,7 +71,7 @@ export fn _start() noreturn {
         io.println("] now exec'ing 'hello'...");
         io.print("\r\n");
 
-        _ = sys.execve("hello"); // only returns on error
+        _ = sys.execve("hello", null); // only returns on error
 
         io.println("[child] execve failed!");
         sys.exit(1);

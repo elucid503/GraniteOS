@@ -3,7 +3,7 @@
 const PAGE_SIZE: usize = 4096;
 const RAM_BASE: usize = 0x4000_0000;
 const RAM_END: usize = 0x5000_0000; // 256MB at 0x40000000
-const TOTAL_PAGES: usize = (RAM_END - RAM_BASE) / PAGE_SIZE; // 65536
+pub const TOTAL_PAGES: usize = (RAM_END - RAM_BASE) / PAGE_SIZE; // 65536
 
 // Provided by linker.ld - first address not occupied by the kernel image + stack
 extern const __kernel_end: u8;

@@ -70,7 +70,7 @@ pub const PipeFds = struct {
 
 };
 
-var files: [MAX_FILES]FileEntry = undefined;
+pub var files: [MAX_FILES]FileEntry = undefined;
 pub var pipes: [MAX_PIPES]Pipe = undefined;
 
 pub fn init() void {
@@ -207,7 +207,7 @@ pub fn on_fork(child: *scheduler.PCB) void {
 
 }
 
-// --- File read/write ---
+// File read/write
 
 pub fn file_read(desc: *scheduler.FdEntry, buf: [*]u8, count: usize) usize {
 
@@ -360,7 +360,96 @@ pub fn pipe_write(pipe_idx: u8, buf: [*]const u8, count: usize) usize {
 
 }
 
-fn find_file(name: []const u8) ?usize {
+/// Delete a file by name. Only the owner may delete. Returns 0 or negative error.
+pub fn delete_file(name: []const u8, caller_pid: u32) isize {
+
+    const fi = find_file(name) orelse return -2; // ENOENT
+    const entry = &files[fi];
+
+    if (entry.owner != caller_pid) return -13; // EACCES
+
+    entry.kind = .empty;
+    return 0;
+
+}
+
+/// Rename a file. Only the owner may rename. Returns 0 or negative error.
+pub fn rename_file(old_name: []const u8, new_name: []const u8, caller_pid: u32) isize {
+
+    if (new_name.len == 0 or new_name.len > MAX_NAME) return -22; // EINVAL
+    if (find_file(new_name) != null) return -17; // EEXIST
+
+    const fi = find_file(old_name) orelse return -2; // ENOENT
+    const entry = &files[fi];
+
+    if (entry.owner != caller_pid) return -13; // EACCES
+
+    entry.name_len = @intCast(new_name.len);
+    @memcpy(entry.name[0..new_name.len], new_name);
+    entry.name[new_name.len] = 0;
+
+    return 0;
+
+}
+
+/// Write file entries into buf as name\0size_string\0 pairs. Returns bytes written.
+pub fn list_files(buf: [*]u8, size: usize) usize {
+
+    var pos: usize = 0;
+
+    for (&files) |*f| {
+
+        if (f.kind == .empty) continue;
+
+        const name = f.name[0..f.name_len];
+
+        // Format size as decimal string.
+        var num_buf: [20]u8 = undefined;
+        const num_str = format_int(f.size, &num_buf);
+
+        const needed = name.len + 1 + num_str.len + 1;
+
+        if (pos + needed > size) break;
+
+        @memcpy(buf[pos..][0..name.len], name);
+        buf[pos + name.len] = 0;
+        pos += name.len + 1;
+
+        @memcpy(buf[pos..][0..num_str.len], num_str);
+        buf[pos + num_str.len] = 0;
+        pos += num_str.len + 1;
+
+    }
+
+    return pos;
+
+}
+
+fn format_int(value: usize, buf: *[20]u8) []const u8 {
+
+    if (value == 0) {
+
+        buf[19] = '0';
+        return buf[19..20];
+
+    }
+
+    var pos: usize = 20;
+    var v = value;
+
+    while (v > 0) {
+
+        pos -= 1;
+        buf[pos] = '0' + @as(u8, @intCast(v % 10));
+        v /= 10;
+
+    }
+
+    return buf[pos..20];
+
+}
+
+pub fn find_file(name: []const u8) ?usize {
 
     for (0..MAX_FILES) |i| {
 

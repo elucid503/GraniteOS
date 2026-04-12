@@ -91,11 +91,11 @@ _start:
     msr     tcr_el1, x0
     isb
 
-    // Build two-level boot page table: L0 → L1 (both table descriptors),
-    // L1[0] = 1GB device block, L1[1] → L2 table.
+    // Build two-level boot page table: L0 -> L1 (both table descriptors),
+    // L1[0] = 1GB device block, L1[1] -> L2 table.
     // L2 splits the normal-memory GB into 2MB blocks with per-region permissions.
 
-    // L0[0] → L1 table
+    // L0[0] -> L1 table
 
     ldr     x0, =boot_l0_table
     ldr     x1, =boot_l1_table
@@ -110,7 +110,7 @@ _start:
     ldr     x1, =0x0060000000000405
     str     x1, [x0]
 
-    // L1[1] → L2 table (splits 0x40000000-0x7FFFFFFF at 2MB granularity)
+    // L1[1] -> L2 table (splits 0x40000000-0x7FFFFFFF at 2MB granularity)
 
     ldr     x1, =boot_l2_table
     orr     x1, x1, #0x3           // table descriptor

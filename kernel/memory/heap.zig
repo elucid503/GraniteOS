@@ -20,6 +20,7 @@ pub fn init(num_pages: usize) void {
         if (i == 0) {
 
             bump_ptr = page;
+            heap_start = page;
 
         }
 
@@ -28,6 +29,8 @@ pub fn init(num_pages: usize) void {
     }
 
 }
+
+var heap_start: usize = 0;
 
 /// Allocate size bytes aligned to alignment. Returns null when the heap is exhausted.
 pub fn alloc(size: usize, alignment: usize) ?[*]u8 {
@@ -38,5 +41,19 @@ pub fn alloc(size: usize, alignment: usize) ?[*]u8 {
 
     bump_ptr = aligned_ptr + size;
     return @ptrFromInt(aligned_ptr);
+
+}
+
+/// Return the number of bytes currently allocated from the heap.
+pub fn used_bytes() usize {
+
+    return bump_ptr - heap_start;
+
+}
+
+/// Return the total heap capacity in bytes.
+pub fn capacity() usize {
+
+    return heap_end - heap_start;
 
 }

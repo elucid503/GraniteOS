@@ -21,7 +21,7 @@ export fn _start() noreturn {
     const pid = sys.getpid();
 
     // 1. Register a handler for 'interrupt' and send it to ourselves.
-    //    The handler sets a flag and calls sigreturn, resuming right after kill().
+    // The handler sets a flag and calls sigreturn, resuming right after kill().
 
     _ = sys.sigaction(1, @intFromPtr(&handle_interrupt));
 

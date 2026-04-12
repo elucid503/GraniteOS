@@ -156,7 +156,7 @@ _el0_sync:
     lsr     x9,  x9,  #26          // EC = ESR[31:26]
     and     x9,  x9,  #0x3F
     cmp     x9,  #0x15             // SVC instruction executed in AArch64 state
-    bne     .Lel0_fault            // anything else → fault handler
+    bne     .Lel0_fault            // anything else -> fault handler
 
     mov     x0, sp
     bl      handle_syscall          // Zig handler; returns new (or same) SP in x0

@@ -227,12 +227,12 @@ This is the full chain required before a user-compiled binary can run on Granite
 
 ```
 1. User compiles a C or Zig program targeting aarch64-freestanding
-   → produces an ELF64 binary
+   -> produces an ELF64 binary
 
 2. Binary is placed into the ramfs image
    (embedded in kernel at build time, or loaded from initrd)
 
-3. Shell calls fork() → child calls execve("/bin/hello", ...)
+3. Shell calls fork() -> child calls execve("/bin/hello", ...)
 
 4. Kernel execve handler:
    a. Loads ELF: allocates user pages, copies segments
@@ -242,8 +242,8 @@ This is the full chain required before a user-compiled binary can run on Granite
 
 5. Process runs in user space, making syscalls via svc #0
 
-6. Process calls exit(0) → kernel marks PCB as Zombie
-   → parent's wait4() is unblocked → PCB freed
+6. Process calls exit(0) -> kernel marks PCB as Zombie
+   -> parent's wait4() is unblocked -> PCB freed
 
 7. Shell prints prompt again
 ```

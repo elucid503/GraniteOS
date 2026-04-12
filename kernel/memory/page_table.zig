@@ -55,13 +55,13 @@ pub fn create() Error!usize {
     @memset(l1_tbl[0..512], 0);
     @memset(l2_tbl[0..512], 0);
 
-    // L0[0] → L1
+    // L0[0] -> L1
     l0_tbl[0] = l1 | TABLE_FLAGS;
 
     // L1[0] = 1GB device block (same as boot table)
     l1_tbl[0] = DEVICE_BLOCK;
 
-    // L1[1] → this process's L2
+    // L1[1] -> this process's L2
     l1_tbl[1] = l2 | TABLE_FLAGS;
 
     // Copy kernel 2MB block entries from boot L2 (indices 0..7)

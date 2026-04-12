@@ -16,8 +16,7 @@ const heap = @import("memory/heap.zig");
 const process = @import("process/process.zig");
 const fs = @import("fs/fs.zig");
 
-// Auto-generated module: all *.zig files in user/ compiled to ELF and embedded.
-const user_programs = @import("user_programs");
+const user_programs = @import("user_programs"); // generated at compile time by build.zig
 
 export fn kmain() noreturn {
 
@@ -44,12 +43,11 @@ export fn kmain() noreturn {
 
     scheduler.init();
 
-    // Spawn only the launcher, which runs each demo sequentially via fork+exec+waitpid.
-    // Other programs (hello, fork_test, sched_test) are exec'd by the launcher on demand.
+    // Time to spawn SLATE (System Launch And Task Executor) as the first user process.
 
     for (user_programs.programs) |prog| {
 
-        if (std.mem.eql(u8, prog.name, "launcher")) {
+        if (std.mem.eql(u8, prog.name, "slate")) {
 
             process.spawn_elf(prog.elf);
             break;
@@ -58,18 +56,7 @@ export fn kmain() noreturn {
 
     }
 
-    uart.print("User Programs ......... ");
-    uart.putchar('0' + @as(u8, @intCast(user_programs.programs.len)));
-    uart.print(" embedded (");
-
-    for (user_programs.programs, 0..) |prog, i| {
-
-        uart.print(prog.name);
-        if (i + 1 < user_programs.programs.len) uart.print(", ");
-
-    }
-
-    uart.print(")\r\n\r\n");
+    uart.print("User Programs ......... Loaded\r\n");
 
     exceptions.enable_interrupts();
 

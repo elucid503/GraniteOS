@@ -3,6 +3,7 @@
 const page_table = @import("../memory/page_table.zig");
 
 pub const KERNEL_STACK_SIZE: usize = 8192;
+
 const MAX_PROCESSES: usize = 16;
 const FRAME_SIZE: usize = 272; // Must match boot/vectors.S
 const ELR_OFFSET: usize = 248;
@@ -24,8 +25,8 @@ pub const FdEntry = struct {
 
     active: bool = false,
     kind: FdKind = .none,
-    entry: u8 = 0,       // index into global file table or pipe table
-    offset: usize = 0,   // read/write cursor (files only)
+    entry: u8 = 0, // index into global file table or pipe table
+    offset: usize = 0, // read/write cursor (files only)
     can_read: bool = false,
     can_write: bool = false,
 
@@ -49,14 +50,18 @@ pub const PCB = struct {
     /// PID this process is waiting on (valid when state == .blocked).
     wait_target_pid: u32,
 
-    // --- File descriptors ---
+    // File descriptors
 
     file_descriptors: [MAX_OPEN_FILES]FdEntry = [_]FdEntry{.{}} ** MAX_OPEN_FILES,
 
     /// Pipe index this process is blocked on (-1 = not waiting).
     waiting_on_pipe: i8 = -1,
 
-    // --- Signal state ---
+    /// Pipe-based redirects for stdin/stdout (-1 = use UART).
+    stdin_pipe: i8 = -1,
+    stdout_pipe: i8 = -1,
+
+    // Signal state
 
     pending_signals: u8 = 0,
     signal_handlers: [SIGNAL_COUNT]usize = [_]usize{0} ** SIGNAL_COUNT,
@@ -105,7 +110,7 @@ pub fn init() void {
 /// Spawn a kernel-mode (EL1) task.
 pub fn spawn_kernel_task(entry_point: *const fn () noreturn) void {
 
-    const pid = process_count;
+    const pid = find_free_slot() orelse return;
     const pcb = &processes[pid];
 
     pcb.* = .{
@@ -125,14 +130,12 @@ pub fn spawn_kernel_task(entry_point: *const fn () noreturn) void {
     build_initial_frame(initial_sp, @intFromPtr(entry_point), SPSR_EL1H, 0);
     pcb.kernel_stack_pointer = initial_sp;
 
-    process_count += 1;
-
 }
 
 /// Spawn a user-mode (EL0) task with a pre-built page table.
 pub fn spawn_user_task(entry_point: usize, user_stack_top: usize, initial_brk: usize, l0_pa: usize) void {
 
-    const pid = process_count;
+    const pid = find_free_slot() orelse return;
     const pcb = &processes[pid];
 
     pcb.* = .{
@@ -152,8 +155,6 @@ pub fn spawn_user_task(entry_point: usize, user_stack_top: usize, initial_brk: u
     build_initial_frame(initial_sp, entry_point, SPSR_EL0T, user_stack_top);
     pcb.kernel_stack_pointer = initial_sp;
 
-    process_count += 1;
-
 }
 
 /// Timer tick: save current SP, advance to next ready process, return its SP.
@@ -171,15 +172,17 @@ pub fn tick(saved_sp: usize) usize {
 }
 
 /// Mark the current process zombie, wake any process waiting on this PID,
-/// and switch to the next ready process.
+/// and switch to the next ready process. If a waiter exists, the zombie is
+/// immediately reaped (marked empty) so the slot can be reused.
 pub fn exit_current(saved_sp: usize) usize {
 
     const exiting_pid = processes[current_index].pid;
+    const exiting = &processes[current_index];
 
-    processes[current_index].kernel_stack_pointer = saved_sp;
-    processes[current_index].state = .zombie;
+    exiting.kernel_stack_pointer = saved_sp;
+    exiting.state = .zombie;
 
-    // Here we 'wake' any process blocked in waitpid() for this PID.
+    var reaped = false;
 
     for (&processes) |*proc| {
 
@@ -187,29 +190,31 @@ pub fn exit_current(saved_sp: usize) usize {
 
             proc.state = .ready;
 
-            // Writes the exited PID into the waiter's x0 (first word of the exception frame).
-
             const x0_ptr: *u64 = @ptrFromInt(proc.kernel_stack_pointer);
             x0_ptr.* = @intCast(exiting_pid);
+
+            reaped = true;
 
         }
 
     }
+
+    // If a waiter was found, the zombie is reaped immediately.
+    if (reaped) exiting.state = .empty;
 
     return advance_to_next();
 
 }
 
 /// Block the current process until the target PID exits.
-/// Returns immediately if the target is already zombie.
+/// Returns immediately if the target is already zombie (and reaps it).
 pub fn wait_on(saved_sp: usize, target_pid: u32) usize {
 
     if (target_pid >= process_count) return saved_sp;
 
-    // If already zombie, returns immediately with the pid.
-
     if (processes[target_pid].state == .zombie) {
 
+        processes[target_pid].state = .empty; // Reap
         const x0_ptr: *u64 = @ptrFromInt(saved_sp);
         x0_ptr.* = @intCast(target_pid);
         return saved_sp;
@@ -274,12 +279,10 @@ pub fn is_zombie(pid: u32) bool {
 /// Clone the current process into a new PCB, copying its exception frame.
 /// The caller supplies the child's page table root and the saved kernel SP
 /// (which points to the exception frame to copy).
-/// Returns the child PID, or null if MAX_PROCESSES is reached.
+/// Returns the child PID, or null if no free slot is available.
 pub fn fork_user_task(parent_frame_sp: usize, child_l0: usize) ?u32 {
 
-    if (process_count >= MAX_PROCESSES) return null;
-
-    const pid = process_count;
+    const pid = find_free_slot() orelse return null;
     const parent = &processes[current_index];
     const child  = &processes[pid];
 
@@ -292,6 +295,8 @@ pub fn fork_user_task(parent_frame_sp: usize, child_l0: usize) ?u32 {
         .user_brk             = parent.user_brk,
         .wait_target_pid      = 0,
         .file_descriptors     = parent.file_descriptors,
+        .stdin_pipe           = parent.stdin_pipe,
+        .stdout_pipe          = parent.stdout_pipe,
         .signal_handlers      = parent.signal_handlers,
         .kernel_stack         = undefined,
 
@@ -311,9 +316,29 @@ pub fn fork_user_task(parent_frame_sp: usize, child_l0: usize) ?u32 {
     @as(*u64, @ptrFromInt(child_sp)).* = 0;
 
     child.kernel_stack_pointer = child_sp;
-    process_count += 1;
 
     return @intCast(pid);
+
+}
+
+/// Finds a free (empty) process slot, reusing reaped slots before extending.
+fn find_free_slot() ?usize {
+
+    for (1..process_count) |i| {
+
+        if (processes[i].state == .empty) return i;
+
+    }
+
+    if (process_count < MAX_PROCESSES) {
+
+        const slot = process_count;
+        process_count += 1;
+        return slot;
+
+    }
+
+    return null;
 
 }
 
