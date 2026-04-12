@@ -7,7 +7,7 @@ An ARM64 operating system ran on top of QEMU, written in Zig (kernel) and ARM64 
 GraniteOS boots on QEMU's `virt` machine, runs a full shell environment with user programs, and supports multiprocess execution with pipes and signals. The kernel is minimal but complete with no unnecessary abstractions. Every component serves a concrete purpose.
 
 **Target Platform:** ARM64 (AArch64) on QEMU  
-**Kernel:** ~2,000 lines of Zig  
+**Kernel:** ~5,000 lines of Zig  
 **Bootloader:** ~300 lines of ARM64 assembly  
 **User Space:** ~1,500 lines of Zig (shell, utilities, testers)
 
