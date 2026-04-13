@@ -20,7 +20,8 @@ export fn _start() noreturn {
     io.println("  - ELF binary loading and fork/exec process model");
     io.println("  - Pipe-based IPC with shell pipeline support");
     io.println("  - Signal delivery and handling");
-    io.println("  - In-memory virtual file system");
+    io.println("  - SMP multi-core support");
+    io.println("  - Persistent filesystem");
     io.println("  - BASALT interactive shell");
     io.println("  - SLATE init system\r\n");
 
