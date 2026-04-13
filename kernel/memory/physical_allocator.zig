@@ -1,4 +1,8 @@
 // kernel/memory/physical_allocator.zig - Bitmap physical page allocator over available RAM
+//
+// Thread-safe: all operations are protected by a mutex for SMP.
+
+const sync = @import("../sync/mutex.zig");
 
 const PAGE_SIZE: usize = 4096;
 const RAM_BASE: usize = 0x4000_0000;
@@ -12,6 +16,8 @@ extern const __kernel_end: u8;
 var bitmap: [TOTAL_PAGES / 8]u8 = undefined;
 
 pub var free_page_count: usize = 0;
+
+var alloc_lock: sync.Mutex = .{};
 
 /// Mark all pages at and above the end of the kernel image as free.
 pub fn init() void {
@@ -36,6 +42,9 @@ pub fn init() void {
 /// Allocate one 4KB physical page. Returns the page's physical address or null if OOM.
 pub fn alloc_page() ?usize {
 
+    alloc_lock.lock();
+    defer alloc_lock.unlock();
+
     for (0..TOTAL_PAGES) |i| {
 
         const bit: u8 = @as(u8, 1) << @as(u3, @intCast(i % 8));
@@ -59,6 +68,9 @@ pub fn alloc_page_at(addr: usize) ?usize {
 
     if (addr < RAM_BASE or addr >= RAM_END) return null;
 
+    alloc_lock.lock();
+    defer alloc_lock.unlock();
+
     const i   = (addr - RAM_BASE) / PAGE_SIZE;
     const bit: u8 = @as(u8, 1) << @as(u3, @intCast(i % 8));
 
@@ -72,6 +84,9 @@ pub fn alloc_page_at(addr: usize) ?usize {
 
 /// Return a previously allocated page to the free pool.
 pub fn free_page(page_addr: usize) void {
+
+    alloc_lock.lock();
+    defer alloc_lock.unlock();
 
     const i   = (page_addr - RAM_BASE) / PAGE_SIZE;
     const bit: u8 = @as(u8, 1) << @as(u3, @intCast(i % 8));

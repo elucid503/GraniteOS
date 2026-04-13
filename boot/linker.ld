@@ -42,11 +42,25 @@ SECTIONS {
 
     }
 
-    /* 64 KB kernel stack; ARM64 ABI requires 16-byte alignment */
+    /* 64 KB kernel stack for core 0; ARM64 ABI requires 16-byte alignment */
 
     . = ALIGN(16);
     . += 64K;
     __stack_top = .;
+
+    /* 16 KB stacks for secondary cores 1-3 */
+
+    . = ALIGN(16);
+    . += 16K;
+    __core1_stack_top = .;
+
+    . = ALIGN(16);
+    . += 16K;
+    __core2_stack_top = .;
+
+    . = ALIGN(16);
+    . += 16K;
+    __core3_stack_top = .;
 
     /* End of all kernel image data; physical allocator uses memory above this */
 

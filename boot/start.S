@@ -1,15 +1,23 @@
-// boot/start.S - ARM64 bootloader: halt non-zero cores, EL2 down to EL1 drop, BSS zero, stack, jump to kmain
+// boot/start.S - ARM64 bootloader: SMP boot, EL2->EL1 drop, BSS zero, jump to kmain
+//
+// Core 0: full init (BSS zero, page tables, MMU, kmain).
+// Cores 1-3: wait on a mailbox, then jump to the secondary entry point
+// written by core 0 after kernel init completes.
 
 .section ".text.boot"
 .global _start
 
 _start:
 
-    // Halt all cores except core 0 (Aff0 field of MPIDR_EL1[7:0])
+    // Read core ID (Aff0 field of MPIDR_EL1[7:0])
 
     mrs     x0, mpidr_el1
     and     x0, x0, #0xFF
-    cbnz    x0, .Lhalt
+
+    // Cores 1-3 go to the secondary entry (dead path with PSCI, kept for safety)
+    cbnz    x0, secondary_entry
+
+    // ---- Core 0 only from here ----
 
     // Drop from EL2 to EL1 if needed; skip if already at EL1
 
@@ -183,17 +191,116 @@ _start:
     bl      kmain
 
 
-.Lhalt:
+// ---- Secondary core entry (cores 1-3) ----
+// Entry point for PSCI CPU_ON. Starts at EL1 with MMU off.
+// Also handles EL2 entry for non-PSCI platforms.
 
-    wfe
-    b       .Lhalt
+.global secondary_entry
+secondary_entry:
 
+    // Read core ID from MPIDR_EL1.Aff0
+
+    mrs     x19, mpidr_el1
+    and     x19, x19, #0xFF
+
+    // Drop from EL2 to EL1 if needed (PSCI starts at EL1; handle both cases)
+
+    mrs     x0, CurrentEL
+    lsr     x0, x0, #2
+    cmp     x0, #2
+    bne     .Lsec_el1
+
+    mov     x0, #(1 << 31)
+    msr     hcr_el2, x0
+
+    mov     x0, #0x0800
+    movk    x0, #0x30d0, lsl #16
+    msr     sctlr_el1, x0
+
+    mov     x0, #(0b00101)
+    orr     x0, x0, #(0xF << 6)
+    msr     spsr_el2, x0
+
+    adr     x0, .Lsec_el1
+    msr     elr_el2, x0
+    eret
+
+.Lsec_el1:
+
+    // Set SCTLR_EL1 to a known-good state (MMU off, caches off).
+    // Needed for the PSCI path which skips the EL2 drop.
+
+    mov     x0, #0x0800
+    movk    x0, #0x30d0, lsl #16
+    msr     sctlr_el1, x0
+    isb
+
+    // Enable FP/SIMD
+
+    mov     x0, #(3 << 20)
+    msr     cpacr_el1, x0
+
+    // Copy core 0's MMU config (MAIR, TCR, TTBR0, SCTLR are the same for all cores)
+
+    mov     x0, #0xff
+    msr     mair_el1, x0
+
+    ldr     x0, =0x1B5183510
+    msr     tcr_el1, x0
+    isb
+
+    ldr     x0, =boot_l0_table
+    msr     ttbr0_el1, x0
+    msr     ttbr1_el1, xzr
+    isb
+
+    mrs     x0, sctlr_el1
+    orr     x0, x0, #(1 << 0)
+    orr     x0, x0, #(1 << 2)
+    orr     x0, x0, #(1 << 12)
+    msr     sctlr_el1, x0
+    isb
+
+    // Install exception vectors
+
+    ldr     x0, =exception_vectors
+    msr     vbar_el1, x0
+    isb
+
+    // Pick per-core stack based on core ID (x19)
+
+    cmp     x19, #1
+    beq     .Lstack1
+    cmp     x19, #2
+    beq     .Lstack2
+
+    // Core 3 (or any other)
+    ldr     x0, =__core3_stack_top
+    b       .Lstack_set
+
+.Lstack1:
+    ldr     x0, =__core1_stack_top
+    b       .Lstack_set
+
+.Lstack2:
+    ldr     x0, =__core2_stack_top
+
+.Lstack_set:
+
+    mov     sp, x0
+
+    // Pass core ID in x0, then jump to kmain_secondary
+
+    mov     x0, x19
+    b       kmain_secondary
+
+
+// ---- Data ----
 
 // Boot page tables - placed in BSS so the zero-loop clears them before use.
 // Alignment requirements: 4KB for all levels (TTBR and descriptor pointers).
 // Exported so page_table.zig can reference them to seed per-process tables.
 
-.section .bss
 .balign 4096
 
 .global boot_l0_table
@@ -206,4 +313,4 @@ boot_l1_table:
 
 .global boot_l2_table
 boot_l2_table:
-    .space 4096      // 512 × 8-byte entries = 4096 bytes
+    .space 4096      // 512 x 8-byte entries = 4096 bytes

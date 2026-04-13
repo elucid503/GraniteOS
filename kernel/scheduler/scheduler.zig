@@ -1,10 +1,17 @@
-// kernel/scheduler/scheduler.zig - Round-robin process scheduler with full PCB
+// kernel/scheduler/scheduler.zig - SMP-aware round-robin process scheduler
+//
+// Each core tracks its own current process via current_indices[core_id].
+// A shared mutex protects all process table mutations. Process 0 serves as
+// core 0's idle task; secondary cores use dedicated idle stacks.
 
 const page_table = @import("../memory/page_table.zig");
+const mutex = @import("../sync/mutex.zig");
 
 pub const KERNEL_STACK_SIZE: usize = 8192;
 
-const MAX_PROCESSES: usize = 16;
+pub const MAX_PROCESSES: usize = 16;
+pub const MAX_CORES: usize = 4;
+
 const FRAME_SIZE: usize = 272; // Must match boot/vectors.S
 const ELR_OFFSET: usize = 248;
 const SPSR_OFFSET: usize = 256;
@@ -12,6 +19,9 @@ const SP_EL0_OFFSET: usize = 264;
 
 const SPSR_EL1H: u64 = 0x5; // EL1h, interrupts enabled
 const SPSR_EL0T: u64 = 0x0; // EL0t, interrupts enabled
+
+/// Sentinel: core is idle (no user process scheduled).
+const IDLE: usize = 0xFFFF;
 
 pub const ProcessState = enum { empty, ready, running, blocked, zombie };
 
@@ -85,7 +95,27 @@ pub const PCB = struct {
 pub var processes: [MAX_PROCESSES]PCB = undefined;
 
 pub var process_count: usize = 0;
-var current_index: usize = 0;
+
+/// Per-core current process index (IDLE = no process scheduled).
+var current_indices: [MAX_CORES]usize = [_]usize{IDLE} ** MAX_CORES;
+
+/// Per-core saved idle stack pointer (the WFE frame to return to when nothing is ready).
+var idle_saved_sp: [MAX_CORES]usize = [_]usize{0} ** MAX_CORES;
+
+/// Number of active cores (set during SMP bringup).
+pub var core_count: usize = 1;
+
+/// Protects process table and scheduling state.
+var sched_lock: mutex.Mutex = .{};
+
+/// Read the current core ID from MPIDR_EL1.Aff0.
+pub fn get_core_id() usize {
+
+    return asm volatile ("mrs %[out], mpidr_el1"
+        : [out] "=r" (-> usize),
+    ) & 0xFF;
+
+}
 
 pub fn init() void {
 
@@ -106,12 +136,30 @@ pub fn init() void {
     };
 
     process_count = 1;
-    current_index = 0;
+    current_indices[0] = 0;
+
+}
+
+/// Register a secondary core as active. Called from kmain_secondary.
+pub fn register_core(core_id: usize) void {
+
+    if (core_id > 0 and core_id < MAX_CORES) {
+
+        current_indices[core_id] = IDLE;
+
+        sched_lock.lock();
+        if (core_id + 1 > core_count) core_count = core_id + 1;
+        sched_lock.unlock();
+
+    }
 
 }
 
 /// Spawn a kernel-mode (EL1) task.
 pub fn spawn_kernel_task(entry_point: *const fn () noreturn) void {
+
+    sched_lock.lock();
+    defer sched_lock.unlock();
 
     const pid = find_free_slot() orelse return;
     const pcb = &processes[pid];
@@ -138,6 +186,9 @@ pub fn spawn_kernel_task(entry_point: *const fn () noreturn) void {
 /// Spawn a user-mode (EL0) task with a pre-built page table.
 pub fn spawn_user_task(entry_point: usize, user_stack_top: usize, initial_brk: usize, l0_pa: usize) void {
 
+    sched_lock.lock();
+    defer sched_lock.unlock();
+
     const pid = find_free_slot() orelse return;
     const pcb = &processes[pid];
 
@@ -163,14 +214,26 @@ pub fn spawn_user_task(entry_point: usize, user_stack_top: usize, initial_brk: u
 /// Timer tick: save current SP, advance to next ready process, return its SP.
 pub fn tick(saved_sp: usize) usize {
 
-    if (processes[current_index].state == .running) {
+    const core = get_core_id();
 
-        processes[current_index].kernel_stack_pointer = saved_sp;
-        processes[current_index].state = .ready;
+    sched_lock.lock();
+    defer sched_lock.unlock();
+
+    const idx = current_indices[core];
+
+    if (idx == IDLE) {
+
+        // Coming from idle - save idle SP for this core
+        idle_saved_sp[core] = saved_sp;
+
+    } else if (idx < MAX_PROCESSES and processes[idx].state == .running) {
+
+        processes[idx].kernel_stack_pointer = saved_sp;
+        processes[idx].state = .ready;
 
     }
 
-    return advance_to_next();
+    return advance_for_core(core);
 
 }
 
@@ -179,8 +242,16 @@ pub fn tick(saved_sp: usize) usize {
 /// immediately reaped (marked empty) so the slot can be reused.
 pub fn exit_current(saved_sp: usize) usize {
 
-    const exiting_pid = processes[current_index].pid;
-    const exiting = &processes[current_index];
+    const core = get_core_id();
+
+    sched_lock.lock();
+    defer sched_lock.unlock();
+
+    const idx = current_indices[core];
+    if (idx == IDLE or idx >= MAX_PROCESSES) return go_idle(core);
+
+    const exiting_pid = processes[idx].pid;
+    const exiting = &processes[idx];
 
     exiting.kernel_stack_pointer = saved_sp;
     exiting.state = .zombie;
@@ -205,13 +276,18 @@ pub fn exit_current(saved_sp: usize) usize {
     // If a waiter was found, the zombie is reaped immediately.
     if (reaped) exiting.state = .empty;
 
-    return advance_to_next();
+    return advance_for_core(core);
 
 }
 
 /// Block the current process until the target PID exits.
 /// Returns immediately if the target is already zombie (and reaps it).
 pub fn wait_on(saved_sp: usize, target_pid: u32) usize {
+
+    const core = get_core_id();
+
+    sched_lock.lock();
+    defer sched_lock.unlock();
 
     if (target_pid >= process_count) return saved_sp;
 
@@ -225,23 +301,40 @@ pub fn wait_on(saved_sp: usize, target_pid: u32) usize {
     }
 
     // Block until target exits.
+    const idx = current_indices[core];
+    if (idx == IDLE or idx >= MAX_PROCESSES) return saved_sp;
 
-    processes[current_index].wait_target_pid = target_pid;
-    return block_current(saved_sp);
+    processes[idx].wait_target_pid = target_pid;
+    processes[idx].kernel_stack_pointer = saved_sp;
+    processes[idx].state = .blocked;
+
+    return advance_for_core(core);
 
 }
 
 /// Block the current process and switch to the next ready process.
 pub fn block_current(saved_sp: usize) usize {
 
-    processes[current_index].kernel_stack_pointer = saved_sp;
-    processes[current_index].state = .blocked;
-    return advance_to_next();
+    const core = get_core_id();
+
+    sched_lock.lock();
+    defer sched_lock.unlock();
+
+    const idx = current_indices[core];
+    if (idx == IDLE or idx >= MAX_PROCESSES) return saved_sp;
+
+    processes[idx].kernel_stack_pointer = saved_sp;
+    processes[idx].state = .blocked;
+
+    return advance_for_core(core);
 
 }
 
 /// Wake all processes blocked on a pipe read for the given pipe index.
 pub fn wake_pipe_waiters(pipe_index: u8) void {
+
+    sched_lock.lock();
+    defer sched_lock.unlock();
 
     for (&processes) |*proc| {
 
@@ -264,10 +357,16 @@ pub fn get_process(pid: u32) ?*PCB {
 
 }
 
-/// Return a pointer to the currently running PCB.
+/// Return a pointer to the currently running PCB on this core.
 pub fn current_process() *PCB {
 
-    return &processes[current_index];
+    const core = get_core_id();
+    const idx = current_indices[core];
+
+    // Idle falls back to process 0 (safe: idle uses boot page table)
+    if (idx == IDLE or idx >= MAX_PROCESSES) return &processes[0];
+
+    return &processes[idx];
 
 }
 
@@ -285,8 +384,16 @@ pub fn is_zombie(pid: u32) bool {
 /// Returns the child PID, or null if no free slot is available.
 pub fn fork_user_task(parent_frame_sp: usize, child_l0: usize) ?u32 {
 
+    const core = get_core_id();
+
+    sched_lock.lock();
+    defer sched_lock.unlock();
+
     const pid = find_free_slot() orelse return null;
-    const parent = &processes[current_index];
+    const parent_idx = current_indices[core];
+    if (parent_idx == IDLE or parent_idx >= MAX_PROCESSES) return null;
+
+    const parent = &processes[parent_idx];
     const child  = &processes[pid];
 
     child.* = .{
@@ -326,6 +433,7 @@ pub fn fork_user_task(parent_frame_sp: usize, child_l0: usize) ?u32 {
 }
 
 /// Finds a free (empty) process slot, reusing reaped slots before extending.
+/// Caller must hold sched_lock.
 fn find_free_slot() ?usize {
 
     for (1..process_count) |i| {
@@ -363,36 +471,56 @@ fn build_initial_frame(sp: usize, elr: usize, spsr: u64, sp_el0: usize) void {
 
 }
 
-fn advance_to_next() usize {
+/// Find the next ready user process for this core. Skip processes running
+/// on other cores (state == .running). Fall back to idle if nothing is ready.
+/// Caller must hold sched_lock.
+fn advance_for_core(core: usize) usize {
 
-    var next = (current_index + 1) % process_count;
+    // Scan all process slots for a ready one (skip index 0 = idle task)
+    var start: usize = 1;
     var tries: usize = 0;
 
     while (tries < process_count) : (tries += 1) {
 
-        // Skips process 0 (idle). we only use it as a last resort.
-        if (next != 0 and processes[next].state == .ready) {
+        const next = if (start < process_count) start else 1;
+        if (next == 0) {
+            start = 1;
+            continue;
+        }
 
-            current_index = next;
+        if (next < process_count and processes[next].state == .ready) {
 
-            processes[current_index].state = .running;
-            page_table.switch_to(processes[current_index].page_table_root);
+            current_indices[core] = next;
+            processes[next].state = .running;
+            page_table.switch_to(processes[next].page_table_root);
 
-            return processes[current_index].kernel_stack_pointer;
+            return processes[next].kernel_stack_pointer;
 
         }
 
-        next = (next + 1) % process_count;
+        start = next + 1;
 
     }
 
-    // No ready user process - idle on process 0.
+    return go_idle(core);
 
-    current_index = 0;
-    processes[0].state = .running;
+}
 
-    page_table.switch_to(processes[0].page_table_root);
+/// Return to idle on this core.
+fn go_idle(core: usize) usize {
 
-    return processes[0].kernel_stack_pointer;
+    current_indices[core] = IDLE;
+    page_table.switch_to(page_table.boot_root());
+
+    // Core 0 uses process 0 as its idle task
+    if (core == 0) {
+
+        current_indices[0] = 0;
+        processes[0].state = .running;
+        return idle_saved_sp[0];
+
+    }
+
+    return idle_saved_sp[core];
 
 }

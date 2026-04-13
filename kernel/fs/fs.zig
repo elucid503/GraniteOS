@@ -3,6 +3,11 @@
 const heap = @import("../memory/heap.zig");
 const scheduler = @import("../scheduler/scheduler.zig");
 const embedded = @import("user_programs");
+const sync = @import("../sync/mutex.zig");
+const persist = @import("persist.zig");
+
+/// Protects all file and pipe table mutations.
+var fs_lock: sync.Mutex = .{};
 
 pub const MAX_FILES: usize = 64;
 pub const MAX_PIPES: usize = 8;
@@ -102,12 +107,13 @@ pub fn init() void {
 }
 
 /// Root layout: `/programs` (embedded user ELFs), `/config`, `/temp`, `/dev`, and `/config/motd`.
+/// Called during init (single-threaded) - no locking needed.
 fn populate_default_layout() void {
 
-    _ = mkdir_in(ROOT_DIR, "programs", 0);
-    _ = mkdir_in(ROOT_DIR, "config", 0);
-    _ = mkdir_in(ROOT_DIR, "temp", 0);
-    _ = mkdir_in(ROOT_DIR, "dev", 0);
+    _ = mkdir_in_locked(ROOT_DIR, "programs", 0);
+    _ = mkdir_in_locked(ROOT_DIR, "config", 0);
+    _ = mkdir_in_locked(ROOT_DIR, "temp", 0);
+    _ = mkdir_in_locked(ROOT_DIR, "dev", 0);
 
     const prog_dir: u8 = @intCast(find_child_any(ROOT_DIR, "programs") orelse return);
 
@@ -120,7 +126,7 @@ fn populate_default_layout() void {
 
     const cfg_idx: u8 = @intCast(find_child_any(ROOT_DIR, "config") orelse return);
 
-    if (!create_file_in(cfg_idx, "motd", 0)) return;
+    if (!create_file_in_locked(cfg_idx, "motd", 0)) return;
 
     const motd_i = find_child_any(cfg_idx, "motd") orelse return;
     const motd = &files[motd_i];
@@ -175,6 +181,9 @@ fn install_program_under(parent: u8, name: []const u8, program_index: u8, elf_le
 /// If `path` resolves to an embedded program inode, return its ELF bytes.
 pub fn resolve_program_elf_from_path(cwd: u8, path: []const u8) ?[]const u8 {
 
+    fs_lock.lock();
+    defer fs_lock.unlock();
+
     const resolved = resolve_existing_entry(cwd, path) orelse return null;
     const entry = &files[resolved.index];
 
@@ -188,28 +197,39 @@ pub fn resolve_program_elf_from_path(cwd: u8, path: []const u8) ?[]const u8 {
 /// Create a new empty file in `parent` (use `ROOT_DIR` or a directory inode index). Returns true on success.
 pub fn create_file_in(parent: u8, name: []const u8, owner: u32) bool {
 
+    fs_lock.lock();
+    defer fs_lock.unlock();
+
+    return create_file_in_locked(parent, name, owner);
+
+}
+
+/// Internal create - caller must hold fs_lock.
+fn create_file_in_locked(parent: u8, name: []const u8, owner: u32) bool {
+
     if (!is_valid_name(name)) return false;
     if (!is_valid_parent(parent)) return false;
     if (find_child_any(parent, name) != null) return false;
 
-    for (&files) |*f| {
+    for (0..MAX_FILES) |i| {
 
-        if (f.kind != .empty) continue;
+        if (files[i].kind != .empty) continue;
 
         const buf = heap.alloc(FILE_CAPACITY, 8) orelse return false;
 
-        f.kind = .file;
-        f.parent = parent;
-        f.owner = owner;
-        f.size = 0;
-        f.capacity = FILE_CAPACITY;
-        f.data = buf;
-        f.name_len = @intCast(name.len);
-        f.permissions = .{};
+        files[i].kind = .file;
+        files[i].parent = parent;
+        files[i].owner = owner;
+        files[i].size = 0;
+        files[i].capacity = FILE_CAPACITY;
+        files[i].data = buf;
+        files[i].name_len = @intCast(name.len);
+        files[i].permissions = .{};
 
-        @memcpy(f.name[0..name.len], name);
-        f.name[name.len] = 0;
+        @memcpy(files[i].name[0..name.len], name);
+        files[i].name[name.len] = 0;
 
+        persist.save_entry(i);
         return true;
 
     }
@@ -230,26 +250,37 @@ fn is_valid_name(name: []const u8) bool {
 /// Create an empty directory under `parent`. Returns true on success.
 pub fn mkdir_in(parent: u8, name: []const u8, owner: u32) bool {
 
+    fs_lock.lock();
+    defer fs_lock.unlock();
+
+    return mkdir_in_locked(parent, name, owner);
+
+}
+
+/// Internal mkdir - caller must hold fs_lock.
+fn mkdir_in_locked(parent: u8, name: []const u8, owner: u32) bool {
+
     if (!is_valid_name(name)) return false;
     if (!is_valid_parent(parent)) return false;
     if (find_child_any(parent, name) != null) return false;
 
-    for (&files) |*f| {
+    for (0..MAX_FILES) |i| {
 
-        if (f.kind != .empty) continue;
+        if (files[i].kind != .empty) continue;
 
-        f.kind = .directory;
-        f.parent = parent;
-        f.owner = owner;
-        f.size = 0;
-        f.capacity = 0;
-        f.data = null;
-        f.name_len = @intCast(name.len);
-        f.permissions = .{};
+        files[i].kind = .directory;
+        files[i].parent = parent;
+        files[i].owner = owner;
+        files[i].size = 0;
+        files[i].capacity = 0;
+        files[i].data = null;
+        files[i].name_len = @intCast(name.len);
+        files[i].permissions = .{};
 
-        @memcpy(f.name[0..name.len], name);
-        f.name[name.len] = 0;
+        @memcpy(files[i].name[0..name.len], name);
+        files[i].name[name.len] = 0;
 
+        persist.save_entry(i);
         return true;
 
     }
@@ -268,6 +299,9 @@ fn is_valid_parent(parent: u8) bool {
 
 /// Open an existing file by path (relative to `pcb.fs_cwd` or absolute). Returns the fd (>= 3) or a negative error.
 pub fn open_file(pcb: *scheduler.PCB, path: []const u8, read: bool, write: bool) isize {
+
+    fs_lock.lock();
+    defer fs_lock.unlock();
 
     const resolved = resolve_existing_entry(pcb.fs_cwd, path) orelse return -2; // ENOENT
     const fi = resolved.index;
@@ -303,6 +337,16 @@ pub fn open_file(pcb: *scheduler.PCB, path: []const u8, read: bool, write: bool)
 
 /// Close a file descriptor. Returns 0 on success or a negative error.
 pub fn close_fd(pcb: *scheduler.PCB, fd: usize) isize {
+
+    fs_lock.lock();
+    defer fs_lock.unlock();
+
+    return close_fd_locked(pcb, fd);
+
+}
+
+/// Internal close - caller must hold fs_lock.
+fn close_fd_locked(pcb: *scheduler.PCB, fd: usize) isize {
 
     if (fd < FIRST_FD) return -9; // EBADF
 
@@ -340,10 +384,13 @@ pub fn close_fd(pcb: *scheduler.PCB, fd: usize) isize {
 /// Close all open file descriptors for a process.
 pub fn close_all(pcb: *scheduler.PCB) void {
 
+    fs_lock.lock();
+    defer fs_lock.unlock();
+
     for (0..scheduler.MAX_OPEN_FILES) |i| {
 
         if (pcb.file_descriptors[i].active) {
-            _ = close_fd(pcb, i + FIRST_FD);
+            _ = close_fd_locked(pcb, i + FIRST_FD);
         }
 
     }
@@ -352,6 +399,9 @@ pub fn close_all(pcb: *scheduler.PCB) void {
 
 /// Increment pipe reference counts for fds inherited across fork.
 pub fn on_fork(child: *scheduler.PCB) void {
+
+    fs_lock.lock();
+    defer fs_lock.unlock();
 
     for (&child.file_descriptors) |*desc| {
 
@@ -368,6 +418,9 @@ pub fn on_fork(child: *scheduler.PCB) void {
 // File read/write
 
 pub fn file_read(desc: *scheduler.FdEntry, buf: [*]u8, count: usize) usize {
+
+    fs_lock.lock();
+    defer fs_lock.unlock();
 
     const entry = &files[desc.entry];
     const remaining = entry.size -| desc.offset;
@@ -397,6 +450,9 @@ pub fn file_read(desc: *scheduler.FdEntry, buf: [*]u8, count: usize) usize {
 
 pub fn file_write(desc: *scheduler.FdEntry, buf: [*]const u8, count: usize) usize {
 
+    fs_lock.lock();
+    defer fs_lock.unlock();
+
     const entry = &files[desc.entry];
 
     if (entry.kind == .program) return 0;
@@ -412,12 +468,16 @@ pub fn file_write(desc: *scheduler.FdEntry, buf: [*]const u8, count: usize) usiz
     desc.offset += n;
     if (desc.offset > entry.size) entry.size = desc.offset;
 
+    persist.save_entry(desc.entry);
     return n;
 
 }
 
 /// Create a pipe and allocate read/write fds in the given process.
 pub fn create_pipe(pcb: *scheduler.PCB) ?PipeFds {
+
+    fs_lock.lock();
+    defer fs_lock.unlock();
 
     var pipe_idx: ?u8 = null;
 
@@ -486,6 +546,9 @@ pub fn create_pipe(pcb: *scheduler.PCB) ?PipeFds {
 /// Read from a pipe. Returns bytes read, or signals the caller to block.
 pub fn pipe_read(pipe_idx: u8, buf: [*]u8, count: usize) ReadResult {
 
+    fs_lock.lock();
+    defer fs_lock.unlock();
+
     const pipe = &pipes[pipe_idx];
 
     if (pipe.count == 0) {
@@ -513,6 +576,9 @@ pub fn pipe_read(pipe_idx: u8, buf: [*]u8, count: usize) ReadResult {
 /// Write to a pipe. Returns bytes written (0 if no readers or buffer full).
 pub fn pipe_write(pipe_idx: u8, buf: [*]const u8, count: usize) usize {
 
+    fs_lock.lock();
+    defer fs_lock.unlock();
+
     const pipe = &pipes[pipe_idx];
 
     if (pipe.reader_count == 0) return 0;
@@ -535,6 +601,9 @@ pub fn pipe_write(pipe_idx: u8, buf: [*]const u8, count: usize) usize {
 /// Delete a regular file by path. Only the owner may delete. Returns 0 or negative error.
 pub fn delete_file_path(cwd: u8, path: []const u8, caller_pid: u32) isize {
 
+    fs_lock.lock();
+    defer fs_lock.unlock();
+
     const resolved = resolve_existing_entry(cwd, path) orelse return -2;
     const entry = &files[resolved.index];
 
@@ -545,6 +614,7 @@ pub fn delete_file_path(cwd: u8, path: []const u8, caller_pid: u32) isize {
     entry.kind = .empty;
     entry.data = null;
 
+    persist.save_entry(resolved.index);
     return 0;
 
 }
@@ -552,6 +622,9 @@ pub fn delete_file_path(cwd: u8, path: []const u8, caller_pid: u32) isize {
 /// Remove a directory and everything beneath it (recursive). Only the owner may remove.
 /// `working_dir` is the process cwd inode: cannot remove that directory or any ancestor of cwd.
 pub fn rmdir_path(cwd: u8, path: []const u8, caller_pid: u32, working_dir: u8) isize {
+
+    fs_lock.lock();
+    defer fs_lock.unlock();
 
     const resolved = resolve_existing_entry(cwd, path) orelse return -2;
     const di: u8 = @intCast(resolved.index);
@@ -624,10 +697,12 @@ fn remove_dir_recursive(di: u8, caller_pid: u32, working_dir: u8) isize {
 
             files[i].kind = .empty;
             files[i].data = null;
+            persist.save_entry(i);
 
         } else if (files[i].kind == .program) {
 
             files[i].kind = .empty;
+            persist.save_entry(i);
 
         } else {
 
@@ -639,6 +714,7 @@ fn remove_dir_recursive(di: u8, caller_pid: u32, working_dir: u8) isize {
     }
 
     files[di].kind = .empty;
+    persist.save_entry(di);
 
     return 0;
 
@@ -646,6 +722,9 @@ fn remove_dir_recursive(di: u8, caller_pid: u32, working_dir: u8) isize {
 
 /// Rename/move a path. Only the owner may rename. Returns 0 or negative error.
 pub fn rename_path(cwd: u8, old_path: []const u8, new_path: []const u8, caller_pid: u32) isize {
+
+    fs_lock.lock();
+    defer fs_lock.unlock();
 
     const old_res = resolve_existing_entry(cwd, old_path) orelse return -2;
     const fi = old_res.index;
@@ -669,6 +748,7 @@ pub fn rename_path(cwd: u8, old_path: []const u8, new_path: []const u8, caller_p
     @memcpy(entry.name[0..new_loc.basename.len], new_loc.basename);
     entry.name[new_loc.basename.len] = 0;
 
+    persist.save_entry(fi);
     return 0;
 
 }
@@ -676,6 +756,9 @@ pub fn rename_path(cwd: u8, old_path: []const u8, new_path: []const u8, caller_p
 /// Write directory listing for `dir_ref` (`ROOT_DIR` or a directory inode) into buf.
 /// Each entry: name\0'f' or 'd'\0size_decimal\0
 pub fn list_dir(buf: [*]u8, size: usize, dir_ref: u8) usize {
+
+    fs_lock.lock();
+    defer fs_lock.unlock();
 
     if (dir_ref != ROOT_DIR and (dir_ref >= MAX_FILES or files[dir_ref].kind != .directory)) return 0;
 
@@ -720,6 +803,9 @@ pub fn list_dir(buf: [*]u8, size: usize, dir_ref: u8) usize {
 /// Resolve a directory path for listing. Returns directory inode or `ROOT_DIR`.
 pub fn resolve_dir_for_list(cwd: u8, path_opt: ?[]const u8) ?u8 {
 
+    fs_lock.lock();
+    defer fs_lock.unlock();
+
     const p = path_opt orelse return cwd;
 
     if (p.len == 0) return cwd;
@@ -735,6 +821,9 @@ pub fn resolve_dir_for_list(cwd: u8, path_opt: ?[]const u8) ?u8 {
 
 /// Change current working directory. Returns 0 or negative error.
 pub fn chdir(pcb: *scheduler.PCB, path: []const u8) isize {
+
+    fs_lock.lock();
+    defer fs_lock.unlock();
 
     if (path.len == 0) return -22;
 
@@ -766,6 +855,9 @@ pub fn chdir(pcb: *scheduler.PCB, path: []const u8) isize {
 
 /// Format absolute path for `pcb.fs_cwd` into buf (NUL-terminated on success). Returns bytes written including NUL, or negative error.
 pub fn getcwd(pcb: *scheduler.PCB, buf: [*]u8, buf_size: usize) isize {
+
+    fs_lock.lock();
+    defer fs_lock.unlock();
 
     if (buf_size == 0) return -22;
 
@@ -830,28 +922,44 @@ pub fn getcwd(pcb: *scheduler.PCB, buf: [*]u8, buf_size: usize) isize {
 /// Create file at path (relative to cwd or absolute). Returns true on success.
 pub fn create_file_path(cwd: u8, path: []const u8, owner: u32) bool {
 
+    fs_lock.lock();
+    defer fs_lock.unlock();
+
     const loc = resolve_parent_and_basename(cwd, path) orelse return false;
     if (loc.basename.len == 0 or loc.basename.len > MAX_NAME) return false;
 
-    return create_file_in(loc.parent, loc.basename, owner);
+    return create_file_in_locked(loc.parent, loc.basename, owner);
 
 }
 
 /// Create directory at path. Returns true on success.
 pub fn mkdir_path(cwd: u8, path: []const u8, owner: u32) bool {
 
+    fs_lock.lock();
+    defer fs_lock.unlock();
+
     const loc = resolve_parent_and_basename(cwd, path) orelse return false;
     if (loc.basename.len == 0 or loc.basename.len > MAX_NAME) return false;
 
-    return mkdir_in(loc.parent, loc.basename, owner);
+    return mkdir_in_locked(loc.parent, loc.basename, owner);
 
 }
 
 /// Look up an entry by full path from cwd (for chmod, etc.). Returns slot index or null.
 pub fn find_entry_path(cwd: u8, path: []const u8) ?usize {
 
+    fs_lock.lock();
+    defer fs_lock.unlock();
+
     const r = resolve_existing_entry(cwd, path) orelse return null;
     return r.index;
+
+}
+
+/// Flush a single file entry to persistent storage (for external callers like chmod).
+pub fn flush_entry(index: usize) void {
+
+    persist.save_entry(index);
 
 }
 

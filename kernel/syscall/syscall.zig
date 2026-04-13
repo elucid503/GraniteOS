@@ -612,6 +612,7 @@ fn sys_chmod(frame: *Frame) u64 {
     fs.files[fi].permissions.anyone_read = anyone_read;
     fs.files[fi].permissions.anyone_write = anyone_write;
 
+    fs.flush_entry(fi);
     return 0;
 
 }
@@ -738,6 +739,9 @@ fn write_scheduler_info(buf: [*]u8, size: usize) u64 {
 
     }
 
+    w.str("Cores: ");
+    w.int(scheduler.core_count);
+    w.str("\r\n");
     w.str("Active Processes: ");
     w.int(active);
     w.str("/");

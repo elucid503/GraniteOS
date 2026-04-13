@@ -1,11 +1,18 @@
 // kernel/memory/heap.zig - Kernel bump allocator backed by physical pages
+//
+// Thread-safe: protected by a mutex for SMP.
 
 const physical_allocator = @import("physical_allocator.zig");
+const sync = @import("../sync/mutex.zig");
 
 const PAGE_SIZE: usize = 4096;
 
 var bump_ptr: usize = 0;
 var heap_end: usize = 0;
+
+var heap_start: usize = 0;
+
+var heap_lock: sync.Mutex = .{};
 
 /// Carve out num_pages contiguous physical pages and use them as the initial heap.
 /// The bitmap allocator always returns the lowest free page first, so sequential calls produce contiguous pages.
@@ -30,10 +37,11 @@ pub fn init(num_pages: usize) void {
 
 }
 
-var heap_start: usize = 0;
-
 /// Allocate size bytes aligned to alignment. Returns null when the heap is exhausted.
 pub fn alloc(size: usize, alignment: usize) ?[*]u8 {
+
+    heap_lock.lock();
+    defer heap_lock.unlock();
 
     const aligned_ptr = (bump_ptr + alignment - 1) & ~(alignment - 1);
 
