@@ -41,7 +41,7 @@ export fn _start() noreturn {
     }
 
     io.println("\r\nAll workers finished.");
-    io.println("If the start/done messages overlap, the cores ran in parallel.");
+    io.println("If the output is garbled, the cores ran in parallel.");
     sys.exit(0);
 
 }

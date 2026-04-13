@@ -110,3 +110,71 @@ pub fn read_line(buf: []u8) []u8 {
     return buf[0..pos];
 
 }
+
+// Atomic printing: buffers output and writes atomically (single syscall).
+// Prevents scheduler-induced interleaving of output from multiple processes/threads.
+
+var atomic_buffer: [512]u8 = undefined;
+var atomic_pos: usize = 0;
+
+/// Add a string to the atomic buffer. Flushes if buffer would overflow.
+pub fn atomic_print(s: []const u8) void {
+
+    if (atomic_pos + s.len > atomic_buffer.len) {
+
+        atomic_flush();
+
+    }
+
+    @memcpy(atomic_buffer[atomic_pos..][0..s.len], s);
+    atomic_pos += s.len;
+
+}
+
+/// Add a decimal integer to the atomic buffer.
+pub fn atomic_print_int(value: usize) void {
+
+    if (value == 0) {
+
+        atomic_print("0");
+        return;
+
+    }
+
+    var buf: [20]u8 = undefined;
+    var pos: usize = buf.len;
+
+    var v = value;
+
+    while (v > 0) {
+
+        pos -= 1;
+        buf[pos] = '0' + @as(u8, @intCast(v % 10));
+
+        v /= 10;
+
+    }
+
+    atomic_print(buf[pos..]);
+
+}
+
+/// Flush the atomic buffer with a newline, writing everything as one syscall.
+pub fn atomic_println() void {
+
+    atomic_print("\r\n");
+    atomic_flush();
+
+}
+
+/// Flush the atomic buffer without adding a newline, writing as one syscall.
+pub fn atomic_flush() void {
+
+    if (atomic_pos > 0) {
+
+        _ = sys.write(sys.STDOUT, atomic_buffer[0..atomic_pos]);
+        atomic_pos = 0;
+
+    }
+
+}

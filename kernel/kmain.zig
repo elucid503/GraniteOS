@@ -33,7 +33,7 @@ export fn kmain() noreturn {
 
     uart.print("Welcome to GraniteOS!\r\n\r\n");
 
-    uart.print("MMU ......... Enabled (identity map)\r\n");
+    uart.print("Memory Management Unit ......... Enabled\r\n");
 
     physical_allocator.init();
     uart.print("Physical Memory ......... Initialized\r\n");
@@ -48,7 +48,7 @@ export fn kmain() noreturn {
 
     if (extio.init()) {
 
-        uart.print("ExtIO ......... Initialized (virtio-blk)\r\n");
+        uart.print("ExtIO ......... Initialized\r\n");
 
         if (persist.load()) {
 
@@ -64,7 +64,7 @@ export fn kmain() noreturn {
 
     } else {
 
-        uart.print("ExtIO ......... Not available (RAM-only FS)\r\n");
+        uart.print("ExtIO ......... Not available\r\n");
 
     }
 
@@ -99,7 +99,7 @@ export fn kmain() noreturn {
         psci_cpu_on(@intCast(i), entry_pa, @intCast(i));
     }
 
-    uart.print("SMP ......... Cores started (PSCI)\r\n");
+    uart.print("SMP ......... Cores started\r\n");
 
     exceptions.enable_interrupts();
 

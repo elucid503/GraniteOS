@@ -10,6 +10,7 @@ const signal = @import("../signal/signal.zig");
 const user_programs = @import("user_programs");
 const heap = @import("../memory/heap.zig");
 const registry = @import("../registry.zig");
+const sync = @import("../sync/mutex.zig");
 
 const SYS_WRITE: u64 = 1;
 const SYS_READ: u64 = 2;
@@ -39,6 +40,9 @@ const SYS_RMDIR: u64 = 25;
 const SYS_GETCWD: u64 = 26;
 
 const PAGE_SIZE: usize = 4096;
+
+/// Protects UART console output from concurrent writes by multiple processes.
+var console_lock: sync.Mutex = .{};
 
 // Mirrors the 272-byte exception frame from boot/vectors.S.
 const Frame = extern struct {
@@ -217,7 +221,9 @@ fn sys_write(frame: *Frame) u64 {
         }
 
         const buf: [*]const u8 = @ptrFromInt(frame.x1);
+        console_lock.lock();
         for (buf[0..frame.x2]) |c| uart.putchar(c);
+        console_lock.unlock();
         return frame.x2;
 
     }
@@ -226,7 +232,9 @@ fn sys_write(frame: *Frame) u64 {
     if (frame.x0 == 2) {
 
         const buf: [*]const u8 = @ptrFromInt(frame.x1);
+        console_lock.lock();
         for (buf[0..frame.x2]) |c| uart.putchar(c);
+        console_lock.unlock();
         return frame.x2;
 
     }

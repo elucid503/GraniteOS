@@ -1,37 +1,68 @@
 // user/sched_test.zig: demo of preemptive scheduling across forked processes
+//
+// Uses atomic printing to prevent scheduler-induced output corruption.
+// Parent waits for all children to complete before exiting.
 
 const sys = @import("syscall");
 const io = @import("io");
 
 export fn _start() noreturn {
 
-    io.println("Demo ......... Preemptive Scheduling\r\n");
+    io.atomic_print("Demo ......... Preemptive Scheduling");
+    io.atomic_println();
+    io.atomic_println();
 
-    // Fork two children so three processes (parent + 2 children) run concurrently.
-    // Each prints a numbered message, proving the scheduler round-robins between them.
+    var child_pids: [2]usize = undefined;
 
+    // Fork two children
     const child_a = sys.fork();
 
     if (child_a == 0) {
 
-        run_worker("A");
+        run_worker_child("A");
 
     }
+
+    if (child_a < 0) {
+
+        io.atomic_print("ERROR: fork failed");
+        io.atomic_println();
+        sys.exit(1);
+
+    }
+
+    child_pids[0] = @intCast(child_a);
 
     const child_b = sys.fork();
 
     if (child_b == 0) {
 
-        run_worker("B");
+        run_worker_child("B");
 
     }
 
+    if (child_b < 0) {
+
+        io.atomic_print("ERROR: fork failed");
+        io.atomic_println();
+        sys.exit(1);
+
+    }
+
+    child_pids[1] = @intCast(child_b);
+
     // Parent is worker "P"
-    run_worker("P");
+    run_worker_parent("P");
+
+    // Parent: wait for both children before exiting
+    _ = sys.waitpid(child_pids[0]);
+    _ = sys.waitpid(child_pids[1]);
+
+    sys.exit(0);
 
 }
 
-fn run_worker(name: []const u8) noreturn {
+fn run_worker_common(name: []const u8) void {
 
     const pid = sys.getpid();
 
@@ -39,28 +70,40 @@ fn run_worker(name: []const u8) noreturn {
 
     while (tick < 3) : (tick += 1) {
 
-        io.print("[Worker ");
-        io.print(name);
-        io.print(" - PID ");
-        io.print_int(pid);
-        io.print("] tick ");
-        io.print_int(tick);
-        io.println("");
+        io.atomic_print("[Worker ");
+        io.atomic_print(name);
+        io.atomic_print(" - PID ");
+        io.atomic_print_int(pid);
+        io.atomic_print("] tick ");
+        io.atomic_print_int(tick);
+        io.atomic_println();
 
-        // the busy-wait is to burn through a scheduling quantum so the timer
-        // preempts us and switches to another worker.
+        // Burn through a scheduling quantum so the timer preempts us
+        // and switches to another worker.
 
         busy_wait();
 
     }
 
-    io.print("[Worker ");
-    io.print(name);
-    io.print(" - PID ");
-    io.print_int(pid);
-    io.println("] done");
+    io.atomic_print("[Worker ");
+    io.atomic_print(name);
+    io.atomic_print(" - PID ");
+    io.atomic_print_int(pid);
+    io.atomic_print("] done");
+    io.atomic_println();
 
+}
+
+fn run_worker_child(name: []const u8) noreturn {
+
+    run_worker_common(name);
     sys.exit(0);
+
+}
+
+fn run_worker_parent(name: []const u8) void {
+
+    run_worker_common(name);
 
 }
 
