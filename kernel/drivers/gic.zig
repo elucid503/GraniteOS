@@ -23,6 +23,7 @@ pub fn init() void {
 /// Each core's CPU interface registers are banked (same address, per-core state).
 pub fn init_secondary() void {
 
+    distributor_set_enable.* = 1 << 30; // PPI 30 enable is banked per-core
     cpu_priority_mask.* = 0xFF;
     cpu_interface_control.* = 1;
 
