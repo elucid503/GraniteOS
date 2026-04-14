@@ -963,6 +963,26 @@ pub fn flush_entry(index: usize) void {
 
 }
 
+/// Wipe all user files and directories from the in-memory FS, then restore the default layout.
+/// Program entries are cleared and re-installed by populate_default_layout.
+pub fn format_user_files() void {
+
+    fs_lock.lock();
+    defer fs_lock.unlock();
+
+    for (&files) |*f| {
+
+        f.kind = .empty;
+        f.data = null;
+        f.size = 0;
+        f.capacity = 0;
+
+    }
+
+    populate_default_layout();
+
+}
+
 fn parent_of_cwd(cwd: u8) u8 {
 
     if (cwd == ROOT_DIR) return ROOT_DIR;

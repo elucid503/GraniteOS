@@ -37,7 +37,14 @@ pub fn build(b: *std.Build) void {
     var entries: std.ArrayListUnmanaged(SrcEntry) = .{};
     defer entries.deinit(b.allocator);
 
-    const scan_dirs = [_][]const u8{ "user/programs/global", "user/programs/common", "user/programs/fs", "user/programs/location", "user/programs/testers" };
+    const scan_dirs = [_][]const u8{
+        "user/programs/global",
+        "user/programs/common",
+        "user/programs/fs",
+        "user/programs/io",
+        "user/programs/location",
+        "user/programs/testers"
+    };
 
     for (scan_dirs) |dir_rel| {
 

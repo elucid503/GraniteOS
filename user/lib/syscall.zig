@@ -26,6 +26,7 @@ pub const SYS_CHDIR: usize = 23;
 pub const SYS_MKDIR: usize = 24;
 pub const SYS_RMDIR: usize = 25;
 pub const SYS_GETCWD: usize = 26;
+pub const SYS_DISKFORMAT: usize = 27;
 
 pub const STDIN: usize = 0;
 pub const STDOUT: usize = 1;
@@ -277,7 +278,7 @@ pub fn getcwd(buf: []u8) isize {
 
 }
 
-/// Get system info. type: 0=scheduler, 1=memory. Returns bytes written.
+/// Get system info. type: 0=scheduler, 1=memory, 2=disk. Returns bytes written.
 pub fn sysinfo(info_type: usize, buf: []u8) usize {
 
     return raw(.{
@@ -288,6 +289,14 @@ pub fn sysinfo(info_type: usize, buf: []u8) usize {
         .x2 = buf.len,
 
     });
+
+}
+
+/// Wipe all user files from the in-memory FS and clear the persistent disk.
+/// The default directory layout is restored in memory. Returns 0 on success.
+pub fn diskformat() isize {
+
+    return @bitCast(raw(.{ .nr = SYS_DISKFORMAT }));
 
 }
 

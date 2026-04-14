@@ -20,7 +20,7 @@ pub const programs: []const Entry = &.{
 
     .{ .name = "help", .description = "List available programs", .category = "common", .listed = true },
     .{ .name = "about", .description = "About GraniteOS", .category = "common", .listed = true },
-    .{ .name = "status", .description = "System status (scheduler | memory)", .category = "common", .listed = true },
+    .{ .name = "status", .description = "System status (scheduler | memory | disk)", .category = "common", .listed = true },
     .{ .name = "hello", .description = "Print a greeting", .category = "common", .listed = true },
     .{ .name = "echo", .description = "Print arguments to stdout", .category = "common", .listed = true },
     .{ .name = "clear", .description = "Clear the terminal screen", .category = "common", .listed = true },
@@ -42,6 +42,10 @@ pub const programs: []const Entry = &.{
     .{ .name = "view", .description = "Display file contents", .category = "fs", .listed = true },
     .{ .name = "edit", .description = "Edit file contents", .category = "fs", .listed = true },
     .{ .name = "own", .description = "Own a file", .category = "fs", .listed = true },
+
+    // I/O utilities
+
+    .{ .name = "diskformat", .description = "Wipe disk and reset file system", .category = "i/o", .listed = true },
 
     // Testers (unlisted)
 

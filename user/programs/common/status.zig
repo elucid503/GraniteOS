@@ -7,7 +7,7 @@ export fn _start(argc: usize, argv: [*]const ?[*:0]const u8) noreturn {
 
     if (argc < 2) {
 
-        io.println("Usage: status <scheduler | memory>");
+        io.println("Usage: status <scheduler | memory | disk>");
         sys.exit(1);
 
     }
@@ -29,9 +29,13 @@ export fn _start(argc: usize, argv: [*]const ?[*:0]const u8) noreturn {
 
         info_type = 1;
 
+    } else if (str_eql_z(subsystem, "disk")) {
+
+        info_type = 2;
+
     } else {
 
-        io.println("status: unknown subsystem (use 'scheduler' or 'memory')");
+        io.println("status: unknown subsystem (use 'scheduler', 'memory', or 'disk')");
         sys.exit(1);
 
     }

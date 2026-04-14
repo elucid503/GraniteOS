@@ -234,6 +234,22 @@ pub fn save_entry(index: usize) void {
 
 }
 
+/// Wipe the disk: zero the superblock and all entry sectors.
+/// On next boot, the magic check fails and the FS initialises fresh from defaults.
+pub fn format() void {
+
+    if (!extio.is_available()) return;
+
+    var buf: [SECTOR_SIZE]u8 align(16) = [_]u8{0} ** SECTOR_SIZE;
+
+    _ = extio.write_sector(HEADER_SECTOR, &buf);
+
+    for (0..fs.MAX_FILES) |i| {
+        _ = extio.write_sector(ENTRY_SECTOR_BASE + @as(u64, @intCast(i)), &buf);
+    }
+
+}
+
 fn read_u32(buf: []const u8, offset: usize) u32 {
 
     return @as(u32, buf[offset]) |

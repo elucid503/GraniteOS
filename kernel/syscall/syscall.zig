@@ -6,11 +6,13 @@ const physical_allocator = @import("../memory/physical_allocator.zig");
 const page_table = @import("../memory/page_table.zig");
 const process = @import("../process/process.zig");
 const fs = @import("../fs/fs.zig");
+const persist = @import("../fs/persist.zig");
 const signal = @import("../signal/signal.zig");
 const user_programs = @import("user_programs");
 const heap = @import("../memory/heap.zig");
 const registry = @import("../registry.zig");
 const sync = @import("../sync/mutex.zig");
+const extio = @import("../drivers/extio.zig");
 
 const SYS_WRITE: u64 = 1;
 const SYS_READ: u64 = 2;
@@ -38,6 +40,7 @@ const SYS_CHDIR: u64 = 23;
 const SYS_MKDIR: u64 = 24;
 const SYS_RMDIR: u64 = 25;
 const SYS_GETCWD: u64 = 26;
+const SYS_DISKFORMAT: u64 = 27;
 
 const PAGE_SIZE: usize = 4096;
 
@@ -97,6 +100,7 @@ pub export fn handle_syscall(saved_sp: usize) usize {
         SYS_MKDIR => frame.x0 = sys_mkdir(frame),
         SYS_RMDIR => frame.x0 = sys_rmdir(frame),
         SYS_GETCWD => frame.x0 = sys_getcwd(frame),
+        SYS_DISKFORMAT => frame.x0 = sys_diskformat(frame),
 
         else => frame.x0 = @bitCast(@as(i64, -38)), // -ENOSYS
 
@@ -727,6 +731,7 @@ fn sys_sysinfo(frame: *Frame) u64 {
 
     if (info_type == 0) return write_scheduler_info(buf, size);
     if (info_type == 1) return write_memory_info(buf, size);
+    if (info_type == 2) return write_disk_info(buf, size);
 
     return 0;
 
@@ -816,6 +821,71 @@ fn write_memory_info(buf: [*]u8, size: usize) u64 {
     w.str(" bytes\r\n");
 
     return w.pos;
+
+}
+
+fn write_disk_info(buf: [*]u8, size: usize) u64 {
+
+    var w = BufWriter{ .buf = buf, .size = size };
+
+    var file_count: usize = 0;
+    var dir_count: usize = 0;
+    var used_data: usize = 0;
+    var used_slots: usize = 0;
+
+    for (fs.files) |f| {
+
+        if (f.kind == .empty or f.kind == .program) continue;
+
+        used_slots += 1;
+
+        if (f.kind == .file) {
+            file_count += 1;
+            used_data += f.size;
+        } else if (f.kind == .directory) {
+            dir_count += 1;
+        }
+
+    }
+
+    const total_slots = fs.MAX_FILES;
+    const total_data = total_slots * fs.FILE_CAPACITY;
+
+    w.str("Disk:\r\n");
+    w.str("  Status:  ");
+    w.str(if (extio.is_available()) "available\r\n" else "not attached\r\n");
+    w.str("  Slots:   ");
+    w.int(used_slots);
+    w.str(" / ");
+    w.int(total_slots);
+    w.str(" used\r\n");
+    w.str("  Data:    ");
+    w.int(used_data);
+    w.str(" / ");
+    w.int(total_data);
+    w.str(" bytes\r\n\r\n");
+
+    w.str("File System:\r\n");
+    w.str("  Files:   ");
+    w.int(file_count);
+    w.str("\r\n");
+    w.str("  Dirs:    ");
+    w.int(dir_count);
+    w.str("\r\n");
+
+    return w.pos;
+
+}
+
+// diskformat() - wipe all user files in memory and on disk, restore defaults.
+fn sys_diskformat(frame: *Frame) u64 {
+
+    _ = frame;
+
+    fs.format_user_files();
+    persist.format();
+
+    return 0;
 
 }
 
