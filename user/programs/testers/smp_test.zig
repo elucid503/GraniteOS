@@ -11,7 +11,7 @@ export fn _start() noreturn {
     io.println("Demo ......... SMP Parallelism\r\n");
     io.print("Spawning ");
     io.print_int(WORKERS);
-    io.println(" workers that each burn CPU...\r\n");
+    io.println(" workers...\r\n");
 
     var pids: [WORKERS]usize = undefined;
 
@@ -41,7 +41,7 @@ export fn _start() noreturn {
     }
 
     io.println("\r\nAll workers finished.");
-    io.println("If the output is garbled, the cores ran in parallel.");
+    io.println("Garbled output never looked so good.");
     sys.exit(0);
 
 }
