@@ -44,6 +44,7 @@ const SYS_DISKFORMAT: u64 = 27;
 const SYS_SEARCH: u64 = 28;
 const SYS_PATHCTL: u64 = 29;
 const SYS_GETPERMS: u64 = 30;
+const SYS_ISATTY: u64 = 31;
 
 const PAGE_SIZE: usize = 4096;
 
@@ -107,6 +108,7 @@ pub export fn handle_syscall(saved_sp: usize) usize {
         SYS_SEARCH => frame.x0 = sys_search(frame),
         SYS_PATHCTL => frame.x0 = sys_pathctl(frame),
         SYS_GETPERMS => frame.x0 = sys_getperms(frame),
+        SYS_ISATTY   => frame.x0 = sys_isatty(frame),
 
         else => frame.x0 = @bitCast(@as(i64, -38)), // -ENOSYS
 
@@ -1056,6 +1058,18 @@ fn str_len(ptr: [*:0]const u8) usize {
 fn align_up(addr: usize, alignment: usize) usize {
 
     return (addr + alignment - 1) & ~(alignment - 1);
+
+}
+
+// isatty(fd) -> 1 if fd is connected to the UART, 0 if it is a pipe or file.
+fn sys_isatty(frame: *Frame) u64 {
+
+    const pcb = scheduler.current_process();
+
+    if (frame.x0 == 0) return if (pcb.stdin_pipe == -1) 1 else 0;
+    if (frame.x0 == 1) return if (pcb.stdout_pipe == -1) 1 else 0;
+
+    return 0;
 
 }
 

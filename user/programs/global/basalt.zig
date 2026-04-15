@@ -30,6 +30,25 @@ var h_head: usize = NONE; // most recent entry
 var h_tail: usize = NONE; // oldest entry
 var h_count: usize = 0;
 
+// Split-pane state.
+
+const MAX_PANES: usize = 2;
+const PANE0_COLS: usize = 40; // columns for pane 0 (0-indexed cols 0-39)
+const PANE1_COLS: usize = 38; // columns for pane 1 (0-indexed cols 42-79, after "| ")
+const MAX_CWD_DISP: usize = 10; // max chars of CWD shown in split prompt
+
+var split_mode: bool = false;
+var active_pane: usize = 0;
+var pane_cwd: [MAX_PANES][257]u8 = undefined;
+var pane_cwd_len: [MAX_PANES]usize = .{0} ** MAX_PANES;
+var pane_h_nodes: [MAX_PANES][HISTORY_MAX]HistoryNode = undefined;
+var pane_h_head: [MAX_PANES]usize = .{NONE} ** MAX_PANES;
+var pane_h_tail: [MAX_PANES]usize = .{NONE} ** MAX_PANES;
+var pane_h_count: [MAX_PANES]usize = .{0} ** MAX_PANES;
+var pane_switched: bool = false;      // Alt+S: switch to other pane
+var pane_new_requested: bool = false; // Alt+N: open split (any mode)
+var pane_close_requested: bool = false; // Alt+C: close active pane
+
 /// Push a command onto the front of the history list.
 /// Evicts the oldest entry when full. Skips duplicate of the most recent entry.
 fn history_push(cmd: []const u8) void {
@@ -92,33 +111,293 @@ fn history_push(cmd: []const u8) void {
 
 export fn _start() noreturn {
 
-    io.println("BASALT ......... Ready");
-    io.println("Type 'help' for available commands, 'exit' to relaunch.\r\n");
+    io.println("BASALT ......... Ready\r\n");
+    io.println("Type 'help' for available commands, 'exit' to relaunch.");
+    io.println("Alt+N: new pane  Alt+S: switch pane  Alt+C: close pane\r\n");
 
     var line_buf: [MAX_LINE]u8 = undefined;
 
     while (true) {
 
-        print_prompt();
+        if (split_mode) {
 
-        const line = read_line_echo(&line_buf);
+            run_split_iteration(&line_buf);
 
-        if (line.len == 0) continue;
+        } else {
 
-        history_push(line);
+            print_prompt();
 
-        // Built-in: exit
+            const line = read_line_impl(&line_buf, .{ .max_width = MAX_LINE - 1, .split_tab = false });
 
-        if (str_eql(line, "exit")) {
+            if (pane_new_requested) {
 
-            io.println("Exiting BASALT...");
-            sys.exit(0);
+                pane_new_requested = false;
+                enter_split_mode();
+                continue;
+
+            }
+
+            if (line.len == 0) continue;
+
+            history_push(line);
+
+            if (str_eql(line, "exit")) {
+
+                io.println("Exiting BASALT...");
+                sys.exit(0);
+
+            }
+
+            execute(line);
 
         }
 
-        execute(line);
+    }
+
+}
+
+// One iteration of the split-pane loop: print split prompt, read input, execute.
+fn run_split_iteration(line_buf: *[MAX_LINE]u8) void {
+
+    // Ensure the process CWD matches the active pane.
+
+    chdir_pane(active_pane);
+
+    print_split_prompt();
+
+    pane_switched = false;
+
+    const max_w = split_input_width(active_pane);
+    const line = read_line_impl(line_buf, .{ .max_width = max_w, .split_tab = true });
+
+    // Handle pane-control keys before inspecting the line.
+
+    if (pane_new_requested) {
+
+        pane_new_requested = false;
+        // Already in split mode; ignore.
+        return;
 
     }
+
+    if (pane_switched) {
+
+        save_pane_cwd(active_pane);
+        save_pane_history(active_pane);
+        print_divider_line();
+
+        active_pane = 1 - active_pane;
+
+        load_pane_history(active_pane);
+        chdir_pane(active_pane);
+        return;
+
+    }
+
+    if (pane_close_requested) {
+
+        pane_close_requested = false;
+        save_pane_cwd(active_pane);
+        save_pane_history(active_pane);
+        split_mode = false;
+        io.println("Split closed.");
+        return;
+
+    }
+
+    if (line.len == 0) return;
+
+    history_push(line);
+
+    if (str_eql(line, "exit")) {
+
+        io.println("Exiting BASALT...");
+        sys.exit(0);
+
+    }
+
+    execute(line);
+
+    // Save CWD in case a 'cd' ran.
+
+    save_pane_cwd(active_pane);
+    save_pane_history(active_pane);
+
+    // Print divider lines before the next prompt so the split is visible.
+
+    print_divider_line();
+    print_divider_line();
+
+}
+
+// Print the split prompt: both pane prompts on one line, cursor in active pane.
+fn print_split_prompt() void {
+
+    const d0 = get_display_cwd(0);
+    const d1 = get_display_cwd(1);
+
+    // Prompt text length: "basalt [cwd]> " = 8 + cwd + 3 = 11 + cwd_len
+    const p0_len = 11 + d0.len;
+    const p1_len = 11 + d1.len;
+
+    // Clear current line.
+
+    io.print("\r\x1B[2K");
+
+    // Pane 0 prompt.
+
+    io.print("basalt [");
+    io.print(d0);
+    io.print("]> ");
+
+    // Pad to column 40 (0-indexed) where the divider sits.
+
+    var col: usize = p0_len;
+
+    while (col < PANE0_COLS) : (col += 1) io.print(" ");
+
+    // Divider.
+
+    io.print("| ");
+
+    // Pane 1 prompt (both always use the same "basalt [cwd]> " form).
+
+    io.print("basalt [");
+    io.print(d1);
+    io.print("]> ");
+
+    // Position cursor at the active pane's input start using CHA (CSI <n> G).
+
+    if (active_pane == 0) {
+
+        // Move back to after pane 0's prompt: ANSI col p0_len+1 (1-indexed).
+
+        io.print("\x1B[");
+        io.print_int(p0_len + 1);
+        io.print("G");
+
+    } else {
+
+        // Pane 1 starts at ANSI col 43 (0-indexed col 42, after "| ").
+        // Cursor is already at ANSI col 43 + p1_len — already at the right place.
+        _ = p1_len; // suppress unused warning; cursor is already positioned
+
+    }
+
+}
+
+// Print a single `|` separator line at the pane divider column.
+fn print_divider_line() void {
+
+    var i: usize = 0;
+    while (i < PANE0_COLS) : (i += 1) io.print(" ");
+    io.print("|\r\n");
+
+}
+
+// Maximum input characters for a pane given its CWD display length.
+fn split_input_width(pane: usize) usize {
+
+    const d = get_display_cwd(pane);
+    const prompt_len = 11 + d.len;
+    const pane_cols: usize = if (pane == 0) PANE0_COLS - 1 else PANE1_COLS - 1;
+
+    if (prompt_len >= pane_cols) return 2;
+
+    return pane_cols - prompt_len;
+
+}
+
+// Return a slice of the pane's CWD, truncated to MAX_CWD_DISP chars from the right.
+fn get_display_cwd(pane: usize) []const u8 {
+
+    const len = pane_cwd_len[pane];
+
+    if (len == 0) return "/";
+
+    const cwd = pane_cwd[pane][0..len];
+
+    return if (len <= MAX_CWD_DISP) cwd else cwd[len - MAX_CWD_DISP ..];
+
+}
+
+// Write the current process CWD into pane_cwd[pane].
+fn save_pane_cwd(pane: usize) void {
+
+    var buf: [256]u8 = undefined;
+    const n = sys.getcwd(&buf);
+
+    if (n > 0) {
+
+        const len: usize = @as(usize, @intCast(n)) - 1; // exclude NUL
+        @memcpy(pane_cwd[pane][0..len], buf[0..len]);
+        pane_cwd_len[pane] = len;
+
+    }
+
+}
+
+// chdir to pane_cwd[pane] (NUL-terminate inline before passing to kernel).
+fn chdir_pane(pane: usize) void {
+
+    pane_cwd[pane][pane_cwd_len[pane]] = 0;
+    _ = sys.chdir(@ptrCast(&pane_cwd[pane]));
+
+}
+
+// Copy current global history state into the pane's saved history.
+fn save_pane_history(pane: usize) void {
+
+    pane_h_nodes[pane] = h_nodes;
+    pane_h_head[pane] = h_head;
+    pane_h_tail[pane] = h_tail;
+    pane_h_count[pane] = h_count;
+
+}
+
+// Restore a pane's saved history into the global history state.
+fn load_pane_history(pane: usize) void {
+
+    h_nodes = pane_h_nodes[pane];
+    h_head = pane_h_head[pane];
+    h_tail = pane_h_tail[pane];
+    h_count = pane_h_count[pane];
+
+}
+
+// Activate split-pane mode.
+fn enter_split_mode() void {
+
+    // Save current CWD and history to both panes.
+
+    var buf: [256]u8 = undefined;
+    const n = sys.getcwd(&buf);
+    var cwd_len: usize = 0;
+
+    if (n > 1) {
+
+        cwd_len = @as(usize, @intCast(n)) - 1;
+        @memcpy(pane_cwd[0][0..cwd_len], buf[0..cwd_len]);
+        @memcpy(pane_cwd[1][0..cwd_len], buf[0..cwd_len]);
+
+    } else {
+
+        pane_cwd[0][0] = '/';
+        pane_cwd[1][0] = '/';
+        cwd_len = 1;
+
+    }
+
+    pane_cwd_len[0] = cwd_len;
+    pane_cwd_len[1] = cwd_len;
+
+    save_pane_history(0);
+    save_pane_history(1);
+
+    active_pane = 0;
+    split_mode = true;
+
+    io.println("Split: Alt+S to switch  Alt+C to close");
 
 }
 
@@ -190,7 +469,7 @@ fn execute(line: []const u8) void {
 
 }
 
-/// Handles `cd` and `path` in the shell process (must not fork).
+/// Handles `cd`, `path`, `new`, and `close` in the shell process (must not fork).
 fn try_builtin(line: []const u8) bool {
 
     const t = trim(line);
@@ -198,6 +477,13 @@ fn try_builtin(line: []const u8) bool {
     if (str_eql(t, "location")) {
 
         builtin_location();
+        return true;
+
+    }
+
+    if (str_eql(t, "new")) {
+
+        enter_split_mode();
         return true;
 
     }
@@ -475,7 +761,7 @@ fn exec_cmd(cmd: []const u8) noreturn {
 
 }
 
-// Line reading with echo
+// Line reading
 
 /// Erase `n` characters from the terminal line by printing backspace-space-backspace sequences.
 fn erase_chars(n: usize) void {
@@ -510,20 +796,25 @@ fn replace_line(buf: []u8, pos: *usize, line_len: *usize, new_cmd: []const u8) v
 
 }
 
-/// Read a line from stdin with echo, backspace, history navigation, and cursor movement.
-/// `pos` is the cursor position (0..line_len); `line_len` is the total chars in the buffer.
-fn read_line_echo(buf: []u8) []u8 {
+// Configuration for read_line_impl.
+const ReadConfig = struct {
+    max_width: usize,
+    split_tab: bool,
+};
 
-    var pos: usize = 0; // cursor position within line
-    var line_len: usize = 0; // total chars typed
+/// Read a line from stdin with full editing support.
+/// In split mode (split_tab=true): Tab sets pane_switched=true and returns empty.
+/// max_width limits the number of typeable characters.
+fn read_line_impl(buf: []u8, config: ReadConfig) []u8 {
 
-    // History navigation state (reset per prompt).
-
+    const effective_max = @min(config.max_width, buf.len - 1);
+    var pos: usize = 0;
+    var line_len: usize = 0;
     var nav_cursor: usize = NONE;
     var saved_buf: [MAX_LINE]u8 = undefined;
     var saved_len: usize = 0;
 
-    while (line_len < buf.len) {
+    while (true) {
 
         const c = io.read_char();
 
@@ -572,6 +863,36 @@ fn read_line_echo(buf: []u8) []u8 {
 
             const c2 = io.read_char();
 
+            // Alt+N: open a new pane (works in any mode).
+
+            if (c2 == 'n') {
+
+                io.print("\r\n");
+                pane_new_requested = true;
+                return buf[0..0];
+
+            }
+
+            // Alt+S: switch pane (split mode only).
+
+            if (c2 == 's' and config.split_tab) {
+
+                io.print("\r\n");
+                pane_switched = true;
+                return buf[0..0];
+
+            }
+
+            // Alt+C: close active pane (split mode only).
+
+            if (c2 == 'c' and config.split_tab) {
+
+                io.print("\r\n");
+                pane_close_requested = true;
+                return buf[0..0];
+
+            }
+
             if (c2 == '[' or c2 == 'O') {
 
                 const c3 = io.read_char();
@@ -580,7 +901,7 @@ fn read_line_echo(buf: []u8) []u8 {
 
                     // Up arrow: older history entry.
 
-                    if (h_head == NONE) continue;
+                    if (h_head == NONE) { continue; }
 
                     if (nav_cursor == NONE) {
 
@@ -591,18 +912,20 @@ fn read_line_echo(buf: []u8) []u8 {
                     } else {
 
                         const older = h_nodes[nav_cursor].next;
-                        if (older == NONE) continue;
+                        if (older == NONE) { continue; }
                         nav_cursor = older;
 
                     }
 
-                    replace_line(buf, &pos, &line_len, h_nodes[nav_cursor].cmd[0..h_nodes[nav_cursor].len]);
+                    const src = h_nodes[nav_cursor].cmd[0..h_nodes[nav_cursor].len];
+                    const capped = src[0..@min(src.len, effective_max)];
+                    replace_line(buf, &pos, &line_len, capped);
 
                 } else if (c3 == 'B') {
 
                     // Down arrow: newer history entry.
 
-                    if (nav_cursor == NONE) continue;
+                    if (nav_cursor == NONE) { continue; }
 
                     const newer = h_nodes[nav_cursor].prev;
 
@@ -614,7 +937,9 @@ fn read_line_echo(buf: []u8) []u8 {
                     } else {
 
                         nav_cursor = newer;
-                        replace_line(buf, &pos, &line_len, h_nodes[nav_cursor].cmd[0..h_nodes[nav_cursor].len]);
+                        const src = h_nodes[nav_cursor].cmd[0..h_nodes[nav_cursor].len];
+                        const capped = src[0..@min(src.len, effective_max)];
+                        replace_line(buf, &pos, &line_len, capped);
 
                     }
 
@@ -648,7 +973,7 @@ fn read_line_echo(buf: []u8) []u8 {
 
         }
 
-        // Tab: complete at end of line (move cursor there first).
+        // Tab: always complete (same in both modes).
 
         if (c == 0x09) {
 
@@ -669,7 +994,7 @@ fn read_line_echo(buf: []u8) []u8 {
 
         nav_cursor = NONE;
 
-        if (line_len >= buf.len - 1) continue; // buffer full
+        if (line_len >= effective_max) continue; // buffer or width full
 
         // Insert char at cursor: shift buf[pos..line_len] right by one.
 
@@ -688,8 +1013,6 @@ fn read_line_echo(buf: []u8) []u8 {
         while (back > 0) : (back -= 1) io.print("\x08");
 
     }
-
-    return buf[0..line_len];
 
 }
 

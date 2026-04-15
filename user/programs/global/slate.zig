@@ -6,7 +6,6 @@ const io = @import("io");
 export fn _start() noreturn {
 
     io.println("SLATE ......... Started");
-    io.println("");
 
     // Main loop: launch the shell and restart it if it ever exits.
 

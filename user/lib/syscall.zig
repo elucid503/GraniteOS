@@ -30,6 +30,7 @@ pub const SYS_DISKFORMAT: usize = 27;
 pub const SYS_SEARCH: usize = 28;
 pub const SYS_PATHCTL: usize = 29;
 pub const SYS_GETPERMS: usize = 30;
+pub const SYS_ISATTY: usize = 31;
 
 pub const STDIN: usize = 0;
 pub const STDOUT: usize = 1;
@@ -357,6 +358,13 @@ pub fn pathctl(op: usize, arg0: usize, arg1: usize) isize {
         .x2 = arg1,
 
     }));
+
+}
+
+/// Return true if fd is connected to the UART terminal (not redirected to a pipe).
+pub fn isatty(fd: usize) bool {
+
+    return raw(.{ .nr = SYS_ISATTY, .x0 = fd }) == 1;
 
 }
 
