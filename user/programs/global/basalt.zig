@@ -195,9 +195,9 @@ fn try_builtin(line: []const u8) bool {
 
     const t = trim(line);
 
-    if (str_eql(t, "path")) {
+    if (str_eql(t, "location")) {
 
-        builtin_path();
+        builtin_location();
         return true;
 
     }
@@ -218,14 +218,14 @@ fn try_builtin(line: []const u8) bool {
 
 }
 
-fn builtin_path() void {
+fn builtin_location() void {
 
     var buf: [256]u8 = undefined;
     const n = sys.getcwd(&buf);
 
     if (n < 0) {
 
-        io.println("path: cannot read current directory");
+        io.println("location: cannot read current directory");
         return;
 
     }
@@ -609,6 +609,16 @@ fn read_line_echo(buf: []u8) []u8 {
 
         }
 
+        // Tab: attempt directory completion.
+
+        if (c == 0x09) {
+
+            tab_complete(buf, &pos);
+            nav_cursor = NONE;
+            continue;
+
+        }
+
         // Ignores non-printable characters.
 
         if (c < 0x20) continue;
@@ -627,6 +637,149 @@ fn read_line_echo(buf: []u8) []u8 {
     }
 
     return buf[0..pos];
+
+}
+
+// Tab completion
+
+/// Complete the current partial word in buf as a directory path.
+/// Splits the trailing word at the last `/` to get a dir and a name prefix,
+/// lists that directory, and filters for directories matching the prefix.
+/// One match: appends the rest of the name and a trailing `/`.
+/// Multiple matches: prints the options on a new line, then reprints the prompt.
+fn tab_complete(buf: []u8, pos: *usize) void {
+
+    // Find the start of the current word (scan back past non-space chars).
+
+    var word_start = pos.*;
+
+    while (word_start > 0 and buf[word_start - 1] != ' ') {
+        word_start -= 1;
+    }
+
+    const word = buf[word_start..pos.*];
+
+    // Split word at the last `/` to get the directory and the name prefix.
+
+    var slash_pos: ?usize = null;
+
+    for (word, 0..) |ch, i| {
+        if (ch == '/') slash_pos = i;
+    }
+
+    const dir_part: []const u8 = if (slash_pos) |sp| word[0 .. sp + 1] else "";
+    const prefix: []const u8 = if (slash_pos) |sp| word[sp + 1 ..] else word;
+
+    // Build a null-terminated path for the directory to list.
+
+    var dir_buf: [MAX_LINE]u8 = undefined;
+    var dir_path: ?[*:0]const u8 = null;
+
+    if (dir_part.len > 0) {
+
+        @memcpy(dir_buf[0..dir_part.len], dir_part);
+        dir_buf[dir_part.len] = 0;
+        dir_path = @ptrCast(&dir_buf);
+
+    }
+
+    // List the target directory.
+
+    var list_buf: [2048]u8 = undefined;
+    const list_n = sys.listfiles_in(&list_buf, dir_path);
+
+    // Collect directories whose names start with `prefix`.
+
+    const MAX_MATCHES = 16;
+    const NAME_MAX = 32;
+
+    var matches: [MAX_MATCHES][NAME_MAX]u8 = undefined;
+    var match_lens: [MAX_MATCHES]usize = undefined;
+    var match_count: usize = 0;
+
+    var i: usize = 0;
+
+    while (i < list_n and match_count < MAX_MATCHES) {
+
+        // Entry layout: name\0 kind_char\0 size_str\0
+
+        const name_start = i;
+
+        while (i < list_n and list_buf[i] != 0) i += 1;
+
+        const name = list_buf[name_start..i];
+        i += 1; // past name NUL
+
+        const kind = if (i < list_n) list_buf[i] else 0;
+        i += 1; // past kind char
+        if (i < list_n) i += 1; // past kind NUL
+
+        // Skip size string.
+
+        while (i < list_n and list_buf[i] != 0) i += 1;
+        if (i < list_n) i += 1; // past size NUL
+
+        if (kind != 'd') continue;
+        if (name.len < prefix.len) continue;
+        if (!starts_with(name, prefix)) continue;
+
+        const copy_len = if (name.len < NAME_MAX) name.len else NAME_MAX - 1;
+        @memcpy(matches[match_count][0..copy_len], name[0..copy_len]);
+        match_lens[match_count] = copy_len;
+        match_count += 1;
+
+    }
+
+    if (match_count == 0) return;
+
+    if (match_count == 1) {
+
+        // Append the remaining characters of the single match, then `/`.
+
+        const rest = matches[0][prefix.len..match_lens[0]];
+        const slash: []const u8 = "/";
+
+        if (pos.* + rest.len + 1 < buf.len) {
+
+            @memcpy(buf[pos.*..][0..rest.len], rest);
+            pos.* += rest.len;
+            buf[pos.*] = '/';
+            pos.* += 1;
+            io.print(rest);
+            io.print(slash);
+
+        }
+
+    } else {
+
+        // Print all matching names, then redraw the prompt and current input.
+
+        io.print("\r\n");
+
+        for (0..match_count) |j| {
+
+            io.print(matches[j][0..match_lens[j]]);
+            io.print("/  ");
+
+        }
+
+        io.print("\r\n");
+        print_prompt();
+        io.print(buf[0..pos.*]);
+
+    }
+
+}
+
+fn starts_with(s: []const u8, prefix: []const u8) bool {
+
+    if (prefix.len > s.len) return false;
+
+    for (prefix, 0..) |ch, j| {
+        if (s[j] != ch) return false;
+    }
+
+    return true;
 
 }
 

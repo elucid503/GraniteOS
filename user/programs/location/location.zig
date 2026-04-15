@@ -1,4 +1,4 @@
-// user/location/path.zig - Print the shell's current working directory (absolute path)
+// user/programs/location/location.zig — Print the current working directory (absolute path)
 
 const sys = @import("syscall");
 const io = @import("io");
@@ -10,7 +10,7 @@ export fn _start() noreturn {
 
     if (n < 0) {
 
-        io.println("path: cannot read current directory");
+        io.println("location: cannot read current directory");
         sys.exit(1);
 
     }

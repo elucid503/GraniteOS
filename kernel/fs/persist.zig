@@ -34,7 +34,7 @@ const DiskEntry = extern struct {
     owner_hi: u16,
     size_lo: u16,
     size_hi: u16,
-    permissions: u8, // bit0=owner_read, bit1=owner_write, bit2=anyone_read, bit3=anyone_write
+    permissions: u8, // bit0=can_read, bit1=can_write, bit2=can_exec, bit3=can_delete
     _pad: [512 - 32 - 1 - 1 - 1 - 2 - 2 - 2 - 2 - 1]u8,
 
 };
@@ -86,10 +86,10 @@ pub fn load() bool {
 
         entry.permissions = .{
 
-            .owner_read = disk.permissions & 1 != 0,
-            .owner_write = disk.permissions & 2 != 0,
-            .anyone_read = disk.permissions & 4 != 0,
-            .anyone_write = disk.permissions & 8 != 0,
+            .can_read = disk.permissions & 1 != 0,
+            .can_write = disk.permissions & 2 != 0,
+            .can_exec = disk.permissions & 4 != 0,
+            .can_delete = disk.permissions & 8 != 0,
 
         };
 
@@ -189,10 +189,10 @@ pub fn save_entry(index: usize) void {
     disk.size_lo = @truncate(entry.size);
     disk.size_hi = @truncate(entry.size >> 16);
 
-    disk.permissions = @as(u8, if (entry.permissions.owner_read) @as(u8, 1) else 0) |
-        @as(u8, if (entry.permissions.owner_write) @as(u8, 2) else 0) |
-        @as(u8, if (entry.permissions.anyone_read) @as(u8, 4) else 0) |
-        @as(u8, if (entry.permissions.anyone_write) @as(u8, 8) else 0);
+    disk.permissions = @as(u8, if (entry.permissions.can_read) @as(u8, 1) else 0) |
+        @as(u8, if (entry.permissions.can_write) @as(u8, 2) else 0) |
+        @as(u8, if (entry.permissions.can_exec) @as(u8, 4) else 0) |
+        @as(u8, if (entry.permissions.can_delete) @as(u8, 8) else 0);
 
     switch (entry.kind) {
 

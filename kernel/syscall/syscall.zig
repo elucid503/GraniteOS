@@ -41,6 +41,8 @@ const SYS_MKDIR: u64 = 24;
 const SYS_RMDIR: u64 = 25;
 const SYS_GETCWD: u64 = 26;
 const SYS_DISKFORMAT: u64 = 27;
+const SYS_SEARCH: u64 = 28;
+const SYS_PATHCTL: u64 = 29;
 
 const PAGE_SIZE: usize = 4096;
 
@@ -101,6 +103,8 @@ pub export fn handle_syscall(saved_sp: usize) usize {
         SYS_RMDIR => frame.x0 = sys_rmdir(frame),
         SYS_GETCWD => frame.x0 = sys_getcwd(frame),
         SYS_DISKFORMAT => frame.x0 = sys_diskformat(frame),
+        SYS_SEARCH => frame.x0 = sys_search(frame),
+        SYS_PATHCTL => frame.x0 = sys_pathctl(frame),
 
         else => frame.x0 = @bitCast(@as(i64, -38)), // -ENOSYS
 
@@ -610,19 +614,21 @@ fn sys_listprogs(frame: *Frame) u64 {
 
 }
 
-// chmod(name, anyone_read, anyone_write) -> 0 or negative error.
+// chmod(name, permissions_bitmask) -> 0 or negative error.
+// Bitmask: bit0=can_read, bit1=can_write, bit2=can_exec, bit3=can_delete.
 fn sys_chmod(frame: *Frame) u64 {
 
     const name_ptr: [*:0]const u8 = @ptrFromInt(frame.x0);
-    const anyone_read = frame.x1 != 0;
-    const anyone_write = frame.x2 != 0;
+    const mask = frame.x1;
     const name = name_ptr[0..str_len(name_ptr)];
 
     const pcb = scheduler.current_process();
     const fi = fs.find_entry_path(pcb.fs_cwd, name) orelse return @bitCast(@as(i64, -2)); // ENOENT
 
-    fs.files[fi].permissions.anyone_read = anyone_read;
-    fs.files[fi].permissions.anyone_write = anyone_write;
+    fs.files[fi].permissions.can_read = mask & 1 != 0;
+    fs.files[fi].permissions.can_write = mask & 2 != 0;
+    fs.files[fi].permissions.can_exec = mask & 4 != 0;
+    fs.files[fi].permissions.can_delete = mask & 8 != 0;
 
     fs.flush_entry(fi);
     return 0;
@@ -637,7 +643,7 @@ fn sys_delete(frame: *Frame) u64 {
 
     const pcb = scheduler.current_process();
 
-    return @bitCast(@as(i64, fs.delete_file_path(pcb.fs_cwd, name, pcb.pid)));
+    return @bitCast(@as(i64, fs.delete_file_path(pcb.fs_cwd, name)));
 
 }
 
@@ -931,23 +937,74 @@ const BufWriter = struct {
 
 };
 
-/// Resolve an ELF image for execve: ramfs `/programs/...`, then embedded name, then `/programs/<basename>` for bare names.
+// search(buf, size, query, mode) -> bytes written.
+// mode 0 = name substring, mode 1 = content substring.
+// Writes null-separated absolute paths into buf.
+fn sys_search(frame: *Frame) u64 {
+
+    const buf: [*]u8 = @ptrFromInt(frame.x0);
+    const size = frame.x1;
+    const query_ptr: [*:0]const u8 = @ptrFromInt(frame.x2);
+    const mode: u8 = @intCast(frame.x3 & 0xFF);
+    const query = query_ptr[0..str_len(query_ptr)];
+
+    const pcb = scheduler.current_process();
+    return fs.search(pcb.fs_cwd, query, mode, buf, size);
+
+}
+
+// pathctl(op, path_ptr) -> 0 or bytes written, or negative error.
+// op: 0=add, 1=remove, 2=list.
+fn sys_pathctl(frame: *Frame) u64 {
+
+    const op = frame.x0;
+
+    if (op == 2) {
+
+        const buf: [*]u8 = @ptrFromInt(frame.x1);
+        const size = frame.x2;
+        return fs.path_list(buf, size);
+
+    }
+
+    const path_ptr: [*:0]const u8 = @ptrFromInt(frame.x1);
+    const path = path_ptr[0..str_len(path_ptr)];
+
+    if (op == 0) {
+
+        if (!fs.path_add(path)) return @bitCast(@as(i64, -28));
+        return 0;
+
+    }
+
+    if (op == 1) {
+
+        if (!fs.path_remove(path)) return @bitCast(@as(i64, -2));
+        return 0;
+
+    }
+
+    return @bitCast(@as(i64, -22)); // EINVAL
+
+}
+
+/// Resolve an ELF image for execve: ramfs path, then search path directories, then embedded name.
 fn resolve_exec_elf(path: []const u8) ?[]const u8 {
 
     const pcb = scheduler.current_process();
 
+    // Try as a direct path (absolute or relative to cwd)
     if (fs.resolve_program_elf_from_path(pcb.fs_cwd, path)) |elf| return elf;
 
-    if (find_program(path)) |elf| return elf;
-
+    // For bare names (no slashes), search the path table
     if (std.mem.indexOfScalar(u8, path, '/') == null) {
 
-        var buf: [48]u8 = undefined;
-        const printed = std.fmt.bufPrint(&buf, "/programs/{s}", .{path}) catch return null;
-
-        return fs.resolve_program_elf_from_path(fs.ROOT_DIR, printed);
+        if (fs.resolve_from_path(path)) |elf| return elf;
 
     }
+
+    // Fall back to embedded programs by name
+    if (find_program(path)) |elf| return elf;
 
     return null;
 

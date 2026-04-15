@@ -43,6 +43,7 @@ pub fn build(b: *std.Build) void {
         "user/programs/fs",
         "user/programs/io",
         "user/programs/location",
+        "user/programs/settings",
         "user/programs/testers"
     };
 

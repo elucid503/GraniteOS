@@ -27,10 +27,10 @@ pub const programs: []const Entry = &.{
     .{ .name = "cat", .description = "Copy stdin to stdout", .category = "common", .listed = true },
     .{ .name = "wc", .description = "Count lines and bytes from stdin", .category = "common", .listed = true },
 
-    // Working directory (cd is a basalt built-in; path is also a built-in and a standalone program)
+    // Working directory (cd and location are basalt built-ins as well as standalone programs)
 
     .{ .name = "cd", .description = "Change working directory", .category = "location", .listed = true },
-    .{ .name = "path", .description = "Print the working directory", .category = "location", .listed = true },
+    .{ .name = "location", .description = "Print the working directory", .category = "location", .listed = true },
 
     // File system utilities
 
@@ -41,7 +41,12 @@ pub const programs: []const Entry = &.{
     .{ .name = "rename", .description = "Rename a file", .category = "fs", .listed = true },
     .{ .name = "view", .description = "Display file contents", .category = "fs", .listed = true },
     .{ .name = "edit", .description = "Edit file contents", .category = "fs", .listed = true },
-    .{ .name = "own", .description = "Own a file", .category = "fs", .listed = true },
+    .{ .name = "perms", .description = "Set file permissions (-read|-write|-exec|-delete|-all)", .category = "fs", .listed = true },
+    .{ .name = "search", .description = "Search files (-name <q> | -content <q>)", .category = "fs", .listed = true },
+
+    // Settings
+
+    .{ .name = "path", .description = "Manage globally-accessible paths (add|remove|view)", .category = "settings", .listed = true },
 
     // I/O utilities
 

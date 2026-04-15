@@ -42,6 +42,7 @@ export fn kmain() noreturn {
     uart.print("Kernel Heap ......... Initialized\r\n");
 
     fs.init();
+    fs.init_path();
     uart.print("File System ......... Initialized\r\n");
 
     // Try to load persistent FS from disk (if virtio-blk is present)

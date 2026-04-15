@@ -27,6 +27,8 @@ pub const SYS_MKDIR: usize = 24;
 pub const SYS_RMDIR: usize = 25;
 pub const SYS_GETCWD: usize = 26;
 pub const SYS_DISKFORMAT: usize = 27;
+pub const SYS_SEARCH: usize = 28;
+pub const SYS_PATHCTL: usize = 29;
 
 pub const STDIN: usize = 0;
 pub const STDOUT: usize = 1;
@@ -300,15 +302,45 @@ pub fn diskformat() isize {
 
 }
 
-/// Change file permissions. Sets anyone_read and anyone_write flags.
-pub fn chmod(name: [*:0]const u8, anyone_read: bool, anyone_write: bool) isize {
+/// Change file permissions via bitmask: bit0=read, bit1=write, bit2=exec, bit3=delete.
+pub fn chmod(name: [*:0]const u8, mask: usize) isize {
 
     return @bitCast(raw(.{
 
         .nr = SYS_CHMOD,
         .x0 = @intFromPtr(name),
-        .x1 = if (anyone_read) 1 else 0,
-        .x2 = if (anyone_write) 1 else 0,
+        .x1 = mask,
+
+    }));
+
+}
+
+/// Search the filesystem. mode 0 = name substring, mode 1 = content substring.
+/// Returns bytes written into buf (null-separated paths).
+pub fn search(buf: []u8, query: [*:0]const u8, mode: usize) usize {
+
+    return raw(.{
+
+        .nr = SYS_SEARCH,
+        .x0 = @intFromPtr(buf.ptr),
+        .x1 = buf.len,
+        .x2 = @intFromPtr(query),
+        .x3 = mode,
+
+    });
+
+}
+
+/// Manage the binary search path. op: 0=add, 1=remove, 2=list.
+/// For add/remove: pass path as x1. For list: pass buf/size as x1/x2.
+pub fn pathctl(op: usize, arg0: usize, arg1: usize) isize {
+
+    return @bitCast(raw(.{
+
+        .nr = SYS_PATHCTL,
+        .x0 = op,
+        .x1 = arg0,
+        .x2 = arg1,
 
     }));
 

@@ -5,6 +5,7 @@ const scheduler = @import("../scheduler/scheduler.zig");
 const embedded = @import("user_programs");
 const sync = @import("../sync/mutex.zig");
 const persist = @import("persist.zig");
+const index = @import("index.zig");
 
 /// Protects all file and pipe table mutations.
 var fs_lock: sync.Mutex = .{};
@@ -26,10 +27,10 @@ pub const FileKind = enum { empty, file, directory, program };
 
 pub const Permissions = struct {
 
-    owner_read: bool = true,
-    owner_write: bool = true,
-    anyone_read: bool = true,
-    anyone_write: bool = false,
+    can_read: bool = true,
+    can_write: bool = false,
+    can_exec: bool = false,
+    can_delete: bool = false,
 
 };
 
@@ -89,6 +90,21 @@ pub const PipeFds = struct {
 
 pub var files: [MAX_FILES]FileEntry = undefined;
 pub var pipes: [MAX_PIPES]Pipe = undefined;
+
+// Binary search path: directories searched when resolving bare command names.
+
+pub const MAX_PATH_ENTRIES: usize = 16;
+pub const MAX_PATH_LEN: usize = 64;
+
+pub const PathEntry = struct {
+
+    path: [MAX_PATH_LEN]u8 = undefined,
+    len: usize = 0,
+    active: bool = false,
+
+};
+
+pub var search_path: [MAX_PATH_ENTRIES]PathEntry = [_]PathEntry{.{}} ** MAX_PATH_ENTRIES;
 
 pub fn init() void {
 
@@ -165,7 +181,7 @@ fn install_program_under(parent: u8, name: []const u8, program_index: u8, elf_le
         f.data = null;
         f.program_index = program_index;
         f.name_len = @intCast(name.len);
-        f.permissions = .{};
+        f.permissions = .{ .can_read = true, .can_exec = true };
 
         @memcpy(f.name[0..name.len], name);
         f.name[name.len] = 0;
@@ -188,6 +204,7 @@ pub fn resolve_program_elf_from_path(cwd: u8, path: []const u8) ?[]const u8 {
     const entry = &files[resolved.index];
 
     if (entry.kind != .program) return null;
+    if (!entry.permissions.can_exec) return null;
     if (entry.program_index >= embedded.programs.len) return null;
 
     return embedded.programs[entry.program_index].elf;
@@ -230,6 +247,7 @@ fn create_file_in_locked(parent: u8, name: []const u8, owner: u32) bool {
         files[i].name[name.len] = 0;
 
         persist.save_entry(i);
+        index.invalidate();
         return true;
 
     }
@@ -281,6 +299,7 @@ fn mkdir_in_locked(parent: u8, name: []const u8, owner: u32) bool {
         files[i].name[name.len] = 0;
 
         persist.save_entry(i);
+        index.invalidate();
         return true;
 
     }
@@ -310,12 +329,10 @@ pub fn open_file(pcb: *scheduler.PCB, path: []const u8, read: bool, write: bool)
     if (entry.kind == .directory) return -21; // EISDIR
     if (entry.kind != .file and entry.kind != .program) return -22; // EINVAL
 
-    const is_owner = (entry.owner == pcb.pid);
-
-    if (read and !((is_owner and entry.permissions.owner_read) or entry.permissions.anyone_read))
+    if (read and !entry.permissions.can_read)
         return -13; // EACCES
 
-    if (write and !((is_owner and entry.permissions.owner_write) or entry.permissions.anyone_write))
+    if (write and !entry.permissions.can_write)
         return -13;
 
     const fd_idx = alloc_fd(pcb) orelse return -24; // EMFILE
@@ -599,7 +616,7 @@ pub fn pipe_write(pipe_idx: u8, buf: [*]const u8, count: usize) usize {
 }
 
 /// Delete a regular file by path. Only the owner may delete. Returns 0 or negative error.
-pub fn delete_file_path(cwd: u8, path: []const u8, caller_pid: u32) isize {
+pub fn delete_file_path(cwd: u8, path: []const u8) isize {
 
     fs_lock.lock();
     defer fs_lock.unlock();
@@ -609,12 +626,13 @@ pub fn delete_file_path(cwd: u8, path: []const u8, caller_pid: u32) isize {
 
     if (entry.kind == .program) return -13; // cannot delete embedded binaries
     if (entry.kind != .file) return -21; // EISDIR
-    if (entry.owner != caller_pid) return -13;
+    if (!entry.permissions.can_delete) return -13; // EACCES
 
     entry.kind = .empty;
     entry.data = null;
 
     persist.save_entry(resolved.index);
+    index.invalidate();
     return 0;
 
 }
@@ -635,7 +653,9 @@ pub fn rmdir_path(cwd: u8, path: []const u8, caller_pid: u32, working_dir: u8) i
 
     if (!dir_tree_owned_by(di, caller_pid)) return -13;
 
-    return remove_dir_recursive(di, caller_pid, working_dir);
+    const result = remove_dir_recursive(di, caller_pid, working_dir);
+    if (result == 0) index.invalidate();
+    return result;
 
 }
 
@@ -749,6 +769,7 @@ pub fn rename_path(cwd: u8, old_path: []const u8, new_path: []const u8, caller_p
     entry.name[new_loc.basename.len] = 0;
 
     persist.save_entry(fi);
+    index.invalidate();
     return 0;
 
 }
@@ -957,9 +978,9 @@ pub fn find_entry_path(cwd: u8, path: []const u8) ?usize {
 }
 
 /// Flush a single file entry to persistent storage (for external callers like chmod).
-pub fn flush_entry(index: usize) void {
+pub fn flush_entry(slot: usize) void {
 
-    persist.save_entry(index);
+    persist.save_entry(slot);
 
 }
 
@@ -980,6 +1001,7 @@ pub fn format_user_files() void {
     }
 
     populate_default_layout();
+    index.invalidate();
 
 }
 
@@ -1165,5 +1187,265 @@ fn mem_eql(a: []const u8, b: []const u8) bool {
 fn str_eql(a: []const u8, b: []const u8) bool {
 
     return a.len == b.len and mem_eql(a, b);
+
+}
+
+/// Check if an entry is executable (for execve permission checks).
+pub fn is_executable(slot: usize) bool {
+
+    if (slot >= MAX_FILES) return false;
+    return files[slot].permissions.can_exec;
+
+}
+
+/// Search the filesystem recursively for files matching a query.
+/// mode 0 = name substring match, mode 1 = content substring match.
+/// Writes results as null-separated absolute paths into buf.
+pub fn search(start_dir: u8, query: []const u8, mode: u8, buf: [*]u8, buf_size: usize) usize {
+
+    fs_lock.lock();
+    defer fs_lock.unlock();
+
+    var pos: usize = 0;
+
+    for (0..MAX_FILES) |i| {
+
+        const f = &files[i];
+        if (f.kind == .empty) continue;
+
+        if (mode == 0) {
+
+            // Name substring match
+            if (!contains(f.name[0..f.name_len], query)) continue;
+
+        } else {
+
+            // Content match: skip directories and programs
+            if (f.kind != .file) continue;
+            if (f.size == 0) continue;
+
+            const data: [*]const u8 = f.data orelse continue;
+            if (!contains(data[0..f.size], query)) continue;
+
+        }
+
+        // Check that this entry is under start_dir (or start_dir is ROOT_DIR)
+        if (start_dir != ROOT_DIR and !is_under_dir(@intCast(i), start_dir)) continue;
+
+        // Build absolute path for this entry
+        var path_buf: [256]u8 = undefined;
+        const path_len = build_absolute_path(@intCast(i), &path_buf);
+
+        if (path_len == 0) continue;
+        if (pos + path_len + 1 > buf_size) break;
+
+        @memcpy(buf[pos..][0..path_len], path_buf[0..path_len]);
+        buf[pos + path_len] = 0;
+        pos += path_len + 1;
+
+    }
+
+    return pos;
+
+}
+
+/// Check if entry is under (descendant of) a given directory.
+fn is_under_dir(entry: u8, dir: u8) bool {
+
+    var cur = entry;
+
+    while (cur != ROOT_DIR) {
+
+        if (cur >= MAX_FILES) return false;
+
+        const parent = files[cur].parent;
+
+        if (parent == dir) return true;
+
+        cur = parent;
+
+    }
+
+    return false;
+
+}
+
+/// Build the absolute path for a file entry. Returns bytes written.
+fn build_absolute_path(entry: u8, buf: *[256]u8) usize {
+
+    if (entry >= MAX_FILES or files[entry].kind == .empty) return 0;
+
+    var parts: [MAX_PATH_SEGMENTS][]const u8 = undefined;
+    var count: usize = 0;
+
+    var cur = entry;
+
+    while (cur != ROOT_DIR) {
+
+        if (cur >= MAX_FILES) return 0;
+        if (count >= MAX_PATH_SEGMENTS) return 0;
+
+        parts[count] = files[cur].name[0..files[cur].name_len];
+        count += 1;
+        cur = files[cur].parent;
+
+    }
+
+    var pos: usize = 0;
+    var i = count;
+
+    while (i > 0) {
+
+        i -= 1;
+
+        if (pos + 1 + parts[i].len >= 256) return 0;
+
+        buf[pos] = '/';
+        pos += 1;
+        @memcpy(buf[pos..][0..parts[i].len], parts[i]);
+        pos += parts[i].len;
+
+    }
+
+    return pos;
+
+}
+
+/// Check if `haystack` contains `needle` as a substring.
+fn contains(haystack: []const u8, needle: []const u8) bool {
+
+    if (needle.len == 0) return true;
+    if (needle.len > haystack.len) return false;
+
+    for (0..haystack.len - needle.len + 1) |i| {
+
+        if (mem_eql(haystack[i..][0..needle.len], needle)) return true;
+
+    }
+
+    return false;
+
+}
+
+// Path management
+
+/// Add a directory to the binary search path. Returns true on success.
+pub fn path_add(path: []const u8) bool {
+
+    fs_lock.lock();
+    defer fs_lock.unlock();
+
+    if (path.len == 0 or path.len > MAX_PATH_LEN) return false;
+
+    // Check for duplicates
+    for (&search_path) |*e| {
+
+        if (e.active and e.len == path.len and mem_eql(e.path[0..e.len], path)) return false;
+
+    }
+
+    for (&search_path) |*e| {
+
+        if (!e.active) {
+
+            @memcpy(e.path[0..path.len], path);
+            e.len = path.len;
+            e.active = true;
+            return true;
+
+        }
+
+    }
+
+    return false;
+
+}
+
+/// Remove a directory from the binary search path. Returns true if found.
+pub fn path_remove(path: []const u8) bool {
+
+    fs_lock.lock();
+    defer fs_lock.unlock();
+
+    for (&search_path) |*e| {
+
+        if (e.active and e.len == path.len and mem_eql(e.path[0..e.len], path)) {
+
+            e.active = false;
+            e.len = 0;
+            return true;
+
+        }
+
+    }
+
+    return false;
+
+}
+
+/// List all path entries into buf as null-separated strings. Returns bytes written.
+pub fn path_list(buf: [*]u8, buf_size: usize) usize {
+
+    fs_lock.lock();
+    defer fs_lock.unlock();
+
+    var pos: usize = 0;
+
+    for (&search_path) |*e| {
+
+        if (!e.active) continue;
+
+        if (pos + e.len + 1 > buf_size) break;
+
+        @memcpy(buf[pos..][0..e.len], e.path[0..e.len]);
+        buf[pos + e.len] = 0;
+        pos += e.len + 1;
+
+    }
+
+    return pos;
+
+}
+
+/// Try to resolve a bare program name by searching the path table.
+/// Returns ELF bytes if found, null otherwise.
+pub fn resolve_from_path(name: []const u8) ?[]const u8 {
+
+    fs_lock.lock();
+    defer fs_lock.unlock();
+
+    for (&search_path) |*e| {
+
+        if (!e.active) continue;
+
+        // Resolve the path directory
+        const dir_res = resolve_existing_entry(ROOT_DIR, e.path[0..e.len]) orelse continue;
+        if (files[dir_res.index].kind != .directory) continue;
+
+        const dir_idx: u8 = @intCast(dir_res.index);
+
+        // Look for the program in this directory
+        const child = find_child_any(dir_idx, name) orelse continue;
+        const entry = &files[child];
+
+        if (entry.kind != .program) continue;
+        if (!entry.permissions.can_exec) continue;
+        if (entry.program_index >= embedded.programs.len) continue;
+
+        return embedded.programs[entry.program_index].elf;
+
+    }
+
+    return null;
+
+}
+
+/// Initialize the default search path.
+pub fn init_path() void {
+
+    const default = "/programs";
+    @memcpy(search_path[0].path[0..default.len], default);
+    search_path[0].len = default.len;
+    search_path[0].active = true;
 
 }
