@@ -29,6 +29,7 @@ pub const SYS_GETCWD: usize = 26;
 pub const SYS_DISKFORMAT: usize = 27;
 pub const SYS_SEARCH: usize = 28;
 pub const SYS_PATHCTL: usize = 29;
+pub const SYS_GETPERMS: usize = 30;
 
 pub const STDIN: usize = 0;
 pub const STDOUT: usize = 1;
@@ -225,7 +226,7 @@ pub fn rename(old_name: [*:0]const u8, new_name: [*:0]const u8) isize {
 
 }
 
-/// List files in the current directory. Writes name\0kind\0size\0 per entry (`kind` is `f` or `d`).
+/// List files in the current directory. Each entry: name\0kind\0size\0perms\0inode\0owner\0capacity\0
 pub fn listfiles(buf: []u8) usize {
 
     return listfiles_in(buf, null);
@@ -299,6 +300,19 @@ pub fn sysinfo(info_type: usize, buf: []u8) usize {
 pub fn diskformat() isize {
 
     return @bitCast(raw(.{ .nr = SYS_DISKFORMAT }));
+
+}
+
+/// Get current permissions of a file as a bitmask: bit0=read, bit1=write, bit2=exec, bit3=delete.
+/// Returns the bitmask (0-15) or a negative error code.
+pub fn getperms(name: [*:0]const u8) isize {
+
+    return @bitCast(raw(.{
+
+        .nr = SYS_GETPERMS,
+        .x0 = @intFromPtr(name),
+
+    }));
 
 }
 

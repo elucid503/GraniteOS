@@ -775,7 +775,8 @@ pub fn rename_path(cwd: u8, old_path: []const u8, new_path: []const u8, caller_p
 }
 
 /// Write directory listing for `dir_ref` (`ROOT_DIR` or a directory inode) into buf.
-/// Each entry: name\0'f' or 'd'\0size_decimal\0
+/// Each entry: name\0'f'|'d'\0size_decimal\0perms_decimal\0inode_decimal\0owner_decimal\0capacity_decimal\0
+/// perms_decimal encodes Permissions as bitmask: bit0=read bit1=write bit2=exec bit3=delete
 pub fn list_dir(buf: [*]u8, size: usize, dir_ref: u8) usize {
 
     fs_lock.lock();
@@ -785,7 +786,7 @@ pub fn list_dir(buf: [*]u8, size: usize, dir_ref: u8) usize {
 
     var pos: usize = 0;
 
-    for (&files) |*f| {
+    for (&files, 0..) |*f, fi| {
 
         if (f.kind == .empty) continue;
         if (f.parent != dir_ref) continue;
@@ -799,7 +800,26 @@ pub fn list_dir(buf: [*]u8, size: usize, dir_ref: u8) usize {
         else
             format_int(f.size, &num_buf);
 
-        const needed = name.len + 1 + 1 + 1 + num_str.len + 1;
+        const perms_val: usize =
+            (@as(usize, if (f.permissions.can_read) 1 else 0)) |
+            (@as(usize, if (f.permissions.can_write) 1 else 0) << 1) |
+            (@as(usize, if (f.permissions.can_exec) 1 else 0) << 2) |
+            (@as(usize, if (f.permissions.can_delete) 1 else 0) << 3);
+        var perms_buf: [20]u8 = undefined;
+        const perms_str = format_int(perms_val, &perms_buf);
+
+        var inode_buf: [20]u8 = undefined;
+        const inode_str = format_int(fi, &inode_buf);
+
+        var owner_buf: [20]u8 = undefined;
+        const owner_str = format_int(f.owner, &owner_buf);
+
+        var cap_buf: [20]u8 = undefined;
+        const cap_str = format_int(f.capacity, &cap_buf);
+
+        const needed = name.len + 1 + 1 + 1 + num_str.len + 1 +
+            perms_str.len + 1 + inode_str.len + 1 +
+            owner_str.len + 1 + cap_str.len + 1;
 
         if (pos + needed > size) break;
 
@@ -814,6 +834,22 @@ pub fn list_dir(buf: [*]u8, size: usize, dir_ref: u8) usize {
         @memcpy(buf[pos..][0..num_str.len], num_str);
         buf[pos + num_str.len] = 0;
         pos += num_str.len + 1;
+
+        @memcpy(buf[pos..][0..perms_str.len], perms_str);
+        buf[pos + perms_str.len] = 0;
+        pos += perms_str.len + 1;
+
+        @memcpy(buf[pos..][0..inode_str.len], inode_str);
+        buf[pos + inode_str.len] = 0;
+        pos += inode_str.len + 1;
+
+        @memcpy(buf[pos..][0..owner_str.len], owner_str);
+        buf[pos + owner_str.len] = 0;
+        pos += owner_str.len + 1;
+
+        @memcpy(buf[pos..][0..cap_str.len], cap_str);
+        buf[pos + cap_str.len] = 0;
+        pos += cap_str.len + 1;
 
     }
 

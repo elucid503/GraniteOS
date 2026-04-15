@@ -18,7 +18,7 @@ pub fn init() void {
     control.* = 0; // Disable UART before reconfiguring
     baud_int_divisor.* = 39;
     baud_frac_divisor.* = 4;
-    line_control.* = 0b11 << 5; // WLEN=0b11 -> 8-bit words, FIFO disabled
+    line_control.* = (1 << 4) | (0b11 << 5); // WLEN=0b11 -> 8-bit words, FIFO enabled
     control.* = (1 << 0) | (1 << 8) | (1 << 9); // Enable UART, TX, RX
 
 }

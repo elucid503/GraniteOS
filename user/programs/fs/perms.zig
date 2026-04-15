@@ -19,11 +19,22 @@ export fn _start(argc: usize, argv: [*]const ?[*:0]const u8) noreturn {
 
     };
 
-    // Defaults: read-only (matches user-created file defaults)
-    var can_read: bool = true;
-    var can_write: bool = false;
-    var can_exec: bool = false;
-    var can_delete: bool = false;
+    // Read current permissions so partial changes don't clobber unmentioned bits.
+    const current = sys.getperms(file_name);
+
+    if (current < 0) {
+
+        io.println("perms: file not found");
+        sys.exit(1);
+
+    }
+
+    const cur: usize = @bitCast(current);
+
+    var can_read: bool = cur & 1 != 0;
+    var can_write: bool = cur & 2 != 0;
+    var can_exec: bool = cur & 4 != 0;
+    var can_delete: bool = cur & 8 != 0;
     var had_flags: bool = false;
 
     var i: usize = 2;

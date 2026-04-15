@@ -43,6 +43,7 @@ const SYS_GETCWD: u64 = 26;
 const SYS_DISKFORMAT: u64 = 27;
 const SYS_SEARCH: u64 = 28;
 const SYS_PATHCTL: u64 = 29;
+const SYS_GETPERMS: u64 = 30;
 
 const PAGE_SIZE: usize = 4096;
 
@@ -105,6 +106,7 @@ pub export fn handle_syscall(saved_sp: usize) usize {
         SYS_DISKFORMAT => frame.x0 = sys_diskformat(frame),
         SYS_SEARCH => frame.x0 = sys_search(frame),
         SYS_PATHCTL => frame.x0 = sys_pathctl(frame),
+        SYS_GETPERMS => frame.x0 = sys_getperms(frame),
 
         else => frame.x0 = @bitCast(@as(i64, -38)), // -ENOSYS
 
@@ -611,6 +613,27 @@ fn sys_listprogs(frame: *Frame) u64 {
     }
 
     return pos;
+
+}
+
+// getperms(name) -> permissions bitmask (0-15) or negative error.
+// Bitmask: bit0=can_read, bit1=can_write, bit2=can_exec, bit3=can_delete.
+fn sys_getperms(frame: *Frame) u64 {
+
+    const name_ptr: [*:0]const u8 = @ptrFromInt(frame.x0);
+    const name = name_ptr[0..str_len(name_ptr)];
+
+    const pcb = scheduler.current_process();
+    const fi = fs.find_entry_path(pcb.fs_cwd, name) orelse return @bitCast(@as(i64, -2)); // ENOENT
+
+    const p = fs.files[fi].permissions;
+    const mask: u64 =
+        (@as(u64, if (p.can_read) 1 else 0)) |
+        (@as(u64, if (p.can_write) 1 else 0) << 1) |
+        (@as(u64, if (p.can_exec) 1 else 0) << 2) |
+        (@as(u64, if (p.can_delete) 1 else 0) << 3);
+
+    return mask;
 
 }
 

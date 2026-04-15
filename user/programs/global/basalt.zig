@@ -490,32 +490,40 @@ fn erase_chars(n: usize) void {
 
 }
 
-/// Replace the current terminal line (of length `pos`) with `new_cmd`, updating buf and pos.
-fn replace_line(buf: []u8, pos: *usize, new_cmd: []const u8) void {
+/// Replace the current terminal line with `new_cmd`.
+/// Moves the cursor to end-of-line first so erase works regardless of cursor position.
+fn replace_line(buf: []u8, pos: *usize, line_len: *usize, new_cmd: []const u8) void {
 
-    erase_chars(pos.*);
+    // Move cursor to end.
+    var k = pos.*;
+    while (k < line_len.*) : (k += 1) io.print("\x1B[C");
+
+    erase_chars(line_len.*);
 
     const copy_len = if (new_cmd.len < buf.len) new_cmd.len else buf.len - 1;
 
     @memcpy(buf[0..copy_len], new_cmd[0..copy_len]);
     pos.* = copy_len;
+    line_len.* = copy_len;
 
-    io.print(buf[0..pos.*]);
+    io.print(buf[0..copy_len]);
 
 }
 
-/// Read a line from stdin with character echo, backspace, and arrow-key history navigation.
+/// Read a line from stdin with echo, backspace, history navigation, and cursor movement.
+/// `pos` is the cursor position (0..line_len); `line_len` is the total chars in the buffer.
 fn read_line_echo(buf: []u8) []u8 {
 
-    var pos: usize = 0;
+    var pos: usize = 0; // cursor position within line
+    var line_len: usize = 0; // total chars typed
 
     // History navigation state (reset per prompt).
 
-    var nav_cursor: usize = NONE; // NONE = at fresh prompt, else index into h_nodes
+    var nav_cursor: usize = NONE;
     var saved_buf: [MAX_LINE]u8 = undefined;
     var saved_len: usize = 0;
 
-    while (pos < buf.len) {
+    while (line_len < buf.len) {
 
         const c = io.read_char();
 
@@ -524,18 +532,32 @@ fn read_line_echo(buf: []u8) []u8 {
         if (c == '\r' or c == '\n') {
 
             io.print("\r\n");
-            return buf[0..pos];
+            return buf[0..line_len];
 
         }
 
-        // Backspace / DEL
+        // Backspace / DEL: remove the char to the left of the cursor.
 
         if (c == 0x08 or c == 0x7F) {
 
             if (pos > 0) {
 
                 pos -= 1;
-                io.print("\x08 \x08");
+                line_len -= 1;
+
+                // Shift buf[pos+1..line_len+1] left by one.
+
+                var k: usize = pos;
+                while (k < line_len) : (k += 1) buf[k] = buf[k + 1];
+
+                // Move cursor back, redraw tail, erase the now-extra char, restore cursor.
+
+                io.print("\x08");
+                io.print(buf[pos..line_len]);
+                io.print(" ");
+
+                var back: usize = line_len - pos + 1;
+                while (back > 0) : (back -= 1) io.print("\x08");
 
             }
 
@@ -543,45 +565,42 @@ fn read_line_echo(buf: []u8) []u8 {
 
         }
 
-        // ESC: check for ANSI escape sequence (arrow keys).
+        // ESC: ANSI escape sequences (arrow keys).
+        // Handles CSI (ESC [ X) and SS3 (ESC O X) for up/down/left/right.
 
         if (c == 0x1B) {
 
             const c2 = io.read_char();
 
-            if (c2 == '[') {
+            if (c2 == '[' or c2 == 'O') {
 
                 const c3 = io.read_char();
 
                 if (c3 == 'A') {
 
-                    // Up arrow: go to older history entry.
+                    // Up arrow: older history entry.
 
                     if (h_head == NONE) continue;
 
                     if (nav_cursor == NONE) {
 
-                        // Save what the user was typing.
-
-                        @memcpy(saved_buf[0..pos], buf[0..pos]);
-                        saved_len = pos;
+                        @memcpy(saved_buf[0..line_len], buf[0..line_len]);
+                        saved_len = line_len;
                         nav_cursor = h_head;
 
                     } else {
 
                         const older = h_nodes[nav_cursor].next;
-
-                        if (older == NONE) continue; // already at oldest
-
+                        if (older == NONE) continue;
                         nav_cursor = older;
 
                     }
 
-                    replace_line(buf, &pos, h_nodes[nav_cursor].cmd[0..h_nodes[nav_cursor].len]);
+                    replace_line(buf, &pos, &line_len, h_nodes[nav_cursor].cmd[0..h_nodes[nav_cursor].len]);
 
                 } else if (c3 == 'B') {
 
-                    // Down arrow: go to newer history entry.
+                    // Down arrow: newer history entry.
 
                     if (nav_cursor == NONE) continue;
 
@@ -589,15 +608,35 @@ fn read_line_echo(buf: []u8) []u8 {
 
                     if (newer == NONE) {
 
-                        // Back to the fresh line the user was typing.
-
-                        replace_line(buf, &pos, saved_buf[0..saved_len]);
+                        replace_line(buf, &pos, &line_len, saved_buf[0..saved_len]);
                         nav_cursor = NONE;
 
                     } else {
 
                         nav_cursor = newer;
-                        replace_line(buf, &pos, h_nodes[nav_cursor].cmd[0..h_nodes[nav_cursor].len]);
+                        replace_line(buf, &pos, &line_len, h_nodes[nav_cursor].cmd[0..h_nodes[nav_cursor].len]);
+
+                    }
+
+                } else if (c3 == 'C') {
+
+                    // Right arrow: move cursor right.
+
+                    if (pos < line_len) {
+
+                        pos += 1;
+                        io.print("\x1B[C");
+
+                    }
+
+                } else if (c3 == 'D') {
+
+                    // Left arrow: move cursor left.
+
+                    if (pos > 0) {
+
+                        pos -= 1;
+                        io.print("\x1B[D");
 
                     }
 
@@ -609,34 +648,48 @@ fn read_line_echo(buf: []u8) []u8 {
 
         }
 
-        // Tab: attempt directory completion.
+        // Tab: complete at end of line (move cursor there first).
 
         if (c == 0x09) {
 
+            while (pos < line_len) : (pos += 1) io.print("\x1B[C");
+
             tab_complete(buf, &pos);
+
+            line_len = pos;
             nav_cursor = NONE;
+
             continue;
 
         }
 
-        // Ignores non-printable characters.
+        // Ignore other non-printable characters.
 
         if (c < 0x20) continue;
 
-        // Reset nav on any regular input.
-
         nav_cursor = NONE;
 
+        if (line_len >= buf.len - 1) continue; // buffer full
+
+        // Insert char at cursor: shift buf[pos..line_len] right by one.
+
+        var k: usize = line_len;
+        while (k > pos) : (k -= 1) buf[k] = buf[k - 1];
+
         buf[pos] = c;
+        line_len += 1;
+
+        // Print from cursor to end of line, then reposition cursor to pos+1.
+
+        io.print(buf[pos..line_len]);
         pos += 1;
 
-        // Echo the character.
-
-        _ = sys.write(sys.STDOUT, @as(*const [1]u8, @ptrCast(&c)));
+        var back: usize = line_len - pos;
+        while (back > 0) : (back -= 1) io.print("\x08");
 
     }
 
-    return buf[0..pos];
+    return buf[0..line_len];
 
 }
 
@@ -685,7 +738,7 @@ fn tab_complete(buf: []u8, pos: *usize) void {
 
     // List the target directory.
 
-    var list_buf: [2048]u8 = undefined;
+    var list_buf: [4096]u8 = undefined;
     const list_n = sys.listfiles_in(&list_buf, dir_path);
 
     // Collect directories whose names start with `prefix`.
@@ -701,7 +754,7 @@ fn tab_complete(buf: []u8, pos: *usize) void {
 
     while (i < list_n and match_count < MAX_MATCHES) {
 
-        // Entry layout: name\0 kind_char\0 size_str\0
+        // Entry layout: name\0 kind_char\0 size\0 perms\0 inode\0 owner\0 capacity\0
 
         const name_start = i;
 
@@ -718,6 +771,17 @@ fn tab_complete(buf: []u8, pos: *usize) void {
 
         while (i < list_n and list_buf[i] != 0) i += 1;
         if (i < list_n) i += 1; // past size NUL
+
+        // Skip perms, inode, owner, capacity strings.
+
+        while (i < list_n and list_buf[i] != 0) i += 1;
+        if (i < list_n) i += 1;
+        while (i < list_n and list_buf[i] != 0) i += 1;
+        if (i < list_n) i += 1;
+        while (i < list_n and list_buf[i] != 0) i += 1;
+        if (i < list_n) i += 1;
+        while (i < list_n and list_buf[i] != 0) i += 1;
+        if (i < list_n) i += 1;
 
         if (kind != 'd') continue;
         if (name.len < prefix.len) continue;
