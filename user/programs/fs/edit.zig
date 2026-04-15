@@ -2,6 +2,7 @@
 
 const sys = @import("syscall");
 const io = @import("io");
+const wm = @import("wm");
 
 // Terminal layout (assumes 80x24 VT100-compatible terminal).
 
@@ -61,7 +62,7 @@ export fn _start(argc: usize, argv: [*]const ?[*:0]const u8) noreturn {
 
 }
 
-// Interactive TUI: load file, edit, save on Ctrl+S, exit on Ctrl+C.
+// Interactive TUI: load file, edit, save on Alt+S, exit on Alt+C.
 fn run_tui(filename: []const u8, file_name_z: [*:0]const u8) void {
 
     // Load existing file content.
@@ -80,36 +81,39 @@ fn run_tui(filename: []const u8, file_name_z: [*:0]const u8) void {
 
     }
 
+    io.print("\x1B[2J"); // clear screen once at entry
     draw(filename);
 
     while (true) {
 
         const c = io.read_char();
 
-        // Ctrl+C: exit without saving.
-
-        if (c == 0x03) {
-
-            io.print("\x1B[2J\x1B[H");
-            return;
-
-        }
-
-        // Ctrl+S: save and exit.
-
-        if (c == 0x13) {
-
-            save(file_name_z);
-            io.print("\x1B[2J\x1B[H");
-            return;
-
-        }
-
-        // ESC sequence: arrow keys.
+        // ESC: Alt shortcuts or arrow keys.
 
         if (c == 0x1B) {
 
             const c2 = io.read_char();
+
+            // Alt+C: exit without saving.
+
+            if (c2 == 'c') {
+
+                io.print("\x1B[2J\x1B[H");
+                return;
+
+            }
+
+            // Alt+S: save and exit.
+
+            if (c2 == 's') {
+
+                save(file_name_z);
+                io.print("\x1B[2J\x1B[H");
+                return;
+
+            }
+
+            // Arrow keys via CSI (ESC [ X) or SS3 (ESC O X).
 
             if (c2 == '[' or c2 == 'O') {
 
@@ -162,11 +166,18 @@ fn run_tui(filename: []const u8, file_name_z: [*:0]const u8) void {
 
 }
 
-// Rewrite the file with the current content buffer.
+// Save the content buffer to a file, handling permissions for delete+recreate.
 fn save(file_name_z: [*:0]const u8) void {
 
+    // Grant write+delete permissions on the existing file so we can replace it.
+
+    _ = sys.chmod(file_name_z, 0b1011); // read + write + delete
     _ = sys.delete(file_name_z);
+
+    // Create a fresh file and grant write permission.
+
     _ = sys.create(file_name_z);
+    _ = sys.chmod(file_name_z, 0b0011); // read + write
 
     const fd_w = sys.open(file_name_z, sys.OPEN_WRITE);
 
@@ -179,7 +190,8 @@ fn save(file_name_z: [*:0]const u8) void {
 
 }
 
-// Full screen redraw: clear, header, content viewport, footer, position cursor.
+// Buffered screen redraw: build entire frame in wm buffer, flush as single write.
+// Uses cursor-home instead of screen-clear to eliminate flicker.
 fn draw(filename: []const u8) void {
 
     const rc = cursor_row_col();
@@ -189,16 +201,19 @@ fn draw(filename: []const u8) void {
     if (rc.row < scroll_row) scroll_row = rc.row;
     if (rc.row >= scroll_row + CONTENT_ROWS) scroll_row = rc.row - CONTENT_ROWS + 1;
 
-    // Clear screen and go home.
+    wm.buf_reset();
+    wm.buf_home(); // cursor to top-left without clearing
 
-    io.print("\x1B[2J\x1B[H");
+    // Header: "filename | N Bytes" then blank line.
 
-    // Header: "filename | N Bytes" + blank line.
-
-    io.print(filename);
-    io.print(" | ");
-    io.print_int(content_len);
-    io.print(" Bytes\r\n\r\n");
+    wm.buf_str(filename);
+    wm.buf_str(" | ");
+    wm.buf_int(content_len);
+    wm.buf_str(" Bytes");
+    wm.buf_clear_eol();
+    wm.buf_str("\r\n");
+    wm.buf_clear_eol();
+    wm.buf_str("\r\n");
 
     // Skip to scroll_row.
 
@@ -222,9 +237,10 @@ fn draw(filename: []const u8) void {
 
         while (pos < content_len and content[pos] != '\n') pos += 1;
 
-        if (pos > line_start) _ = sys.write(sys.STDOUT, content[line_start..pos]);
+        if (pos > line_start) wm.buf_str(content[line_start..pos]);
 
-        io.print("\r\n");
+        wm.buf_clear_eol();
+        wm.buf_str("\r\n");
 
         if (pos < content_len) pos += 1; // step past '\n'
 
@@ -232,19 +248,19 @@ fn draw(filename: []const u8) void {
 
     // Footer.
 
-    io.print("\r\nExit (Ctrl+C) | Save (Ctrl+S)");
+    wm.buf_clear_eol();
+    wm.buf_str("\r\n");
+    wm.buf_str("Exit (Alt+C) | Save (Alt+S)");
+    wm.buf_clear_eol();
 
-    // Position cursor.
+    // Position cursor inside the content area.
     // Content starts at display row 3 (1-indexed): row 1 = header, row 2 = blank.
 
     const disp_row: usize = 3 + (if (rc.row >= scroll_row) rc.row - scroll_row else 0);
     const disp_col: usize = rc.col + 1;
 
-    io.print("\x1B[");
-    io.print_int(disp_row);
-    io.print(";");
-    io.print_int(disp_col);
-    io.print("H");
+    wm.buf_move(disp_row, disp_col);
+    wm.flush();
 
 }
 

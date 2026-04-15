@@ -24,6 +24,8 @@ export fn _start(argc: usize, argv: [*]const ?[*:0]const u8) noreturn {
         }
 
         var buf: [512]u8 = undefined;
+        var out: [1024]u8 = undefined; // double-worst-case: every byte becomes \r\n
+        var out_pos: usize = 0;
 
         while (true) {
 
@@ -31,9 +33,32 @@ export fn _start(argc: usize, argv: [*]const ?[*:0]const u8) noreturn {
 
             if (n <= 0) break;
 
-            _ = sys.write(sys.STDOUT, buf[0..@intCast(n)]);
+            // Translate bare \n to \r\n so lines display correctly on a VT100 terminal.
+
+            for (buf[0..@intCast(n)]) |c| {
+
+                if (c == '\n') {
+
+                    out[out_pos] = '\r';
+                    out_pos += 1;
+
+                }
+
+                out[out_pos] = c;
+                out_pos += 1;
+
+                if (out_pos + 2 > out.len) {
+
+                    _ = sys.write(sys.STDOUT, out[0..out_pos]);
+                    out_pos = 0;
+
+                }
+
+            }
 
         }
+
+        if (out_pos > 0) _ = sys.write(sys.STDOUT, out[0..out_pos]);
 
         _ = sys.close(@intCast(fd));
 

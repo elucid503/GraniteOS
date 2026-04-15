@@ -2,6 +2,7 @@
 
 const sys = @import("syscall");
 const io = @import("io");
+const wm = @import("wm");
 
 const MAX_LINE: usize = 256;
 const MAX_PIPE_STAGES: usize = 8;
@@ -23,39 +24,52 @@ const HistoryNode = struct {
 
 };
 
-// doubly-linked list for history
-
 var h_nodes: [HISTORY_MAX]HistoryNode = undefined;
-var h_head: usize = NONE; // most recent entry
-var h_tail: usize = NONE; // oldest entry
+var h_head: usize = NONE;
+var h_tail: usize = NONE;
 var h_count: usize = 0;
 
 // Split-pane state.
 
 const MAX_PANES: usize = 2;
-const PANE0_COLS: usize = 40; // columns for pane 0 (0-indexed cols 0-39)
-const PANE1_COLS: usize = 38; // columns for pane 1 (0-indexed cols 42-79, after "| ")
-const MAX_CWD_DISP: usize = 10; // max chars of CWD shown in split prompt
+const SPLIT_COL: usize = 40; // column where the vertical divider sits (0-indexed)
+// Pane 1 content starts 2 columns after the divider (divider + space).
+// relay_paned uses col_start+1 (1-indexed), so SLAVE_COL+1 = SPLIT_COL+3 = col 43.
+const SLAVE_COL: usize = SPLIT_COL + 2;
+const MAX_CWD_DISP: usize = 10;
 
 var split_mode: bool = false;
 var active_pane: usize = 0;
 var pane_cwd: [MAX_PANES][257]u8 = undefined;
 var pane_cwd_len: [MAX_PANES]usize = .{0} ** MAX_PANES;
-var pane_h_nodes: [MAX_PANES][HISTORY_MAX]HistoryNode = undefined;
-var pane_h_head: [MAX_PANES]usize = .{NONE} ** MAX_PANES;
-var pane_h_tail: [MAX_PANES]usize = .{NONE} ** MAX_PANES;
-var pane_h_count: [MAX_PANES]usize = .{0} ** MAX_PANES;
-var pane_switched: bool = false;      // Alt+S: switch to other pane
-var pane_new_requested: bool = false; // Alt+N: open split (any mode)
-var pane_close_requested: bool = false; // Alt+C: close active pane
+var pane_h_nodes: [HISTORY_MAX]HistoryNode = undefined; // saved history for pane 0
+var pane_h_head: usize = NONE;
+var pane_h_tail: usize = NONE;
+var pane_h_count: usize = 0;
+
+var pane_switched: bool = false;
+var pane_new_requested: bool = false;
+var pane_close_requested: bool = false;
+
+// True when the split header (full separator + both prompts) should be redrawn.
+// Set to true on every pane switch so each pane entry draws the header exactly once.
+var needs_full_header: bool = true;
+
+// Slave process state (valid when split_mode == true).
+
+var pane1_write_fd: isize = -1; // write end of slave's stdin pipe
+var pane1_read_fd: isize = -1;  // read end kept open to hold reader_count > 0
+var pane1_pid: u32 = 0;
+
+// Set to true when this process is running as the pane-1 slave shell.
+
+var is_slave_mode: bool = false;
 
 /// Push a command onto the front of the history list.
 /// Evicts the oldest entry when full. Skips duplicate of the most recent entry.
 fn history_push(cmd: []const u8) void {
 
     if (cmd.len == 0) return;
-
-    // Skip if identical to most recent entry.
 
     if (h_head != NONE and str_eql(cmd, h_nodes[h_head].cmd[0..h_nodes[h_head].len])) return;
 
@@ -68,22 +82,14 @@ fn history_push(cmd: []const u8) void {
 
     } else {
 
-        // Evict oldest (tail) and reuse its slot.
-
         slot = h_tail;
         const new_tail = h_nodes[slot].prev;
 
-        if (new_tail != NONE) {
-
-            h_nodes[new_tail].next = NONE;
-
-        }
+        if (new_tail != NONE) h_nodes[new_tail].next = NONE;
 
         h_tail = new_tail;
 
     }
-
-    // Fills the slot
 
     const copy_len = if (cmd.len < MAX_LINE) cmd.len else MAX_LINE;
 
@@ -93,23 +99,24 @@ fn history_push(cmd: []const u8) void {
     h_nodes[slot].prev = NONE;
     h_nodes[slot].next = h_head;
 
-    if (h_head != NONE) {
-
-        h_nodes[h_head].prev = slot;
-
-    }
+    if (h_head != NONE) h_nodes[h_head].prev = slot;
 
     h_head = slot;
 
-    if (h_tail == NONE) {
-
-        h_tail = slot;
-
-    }
+    if (h_tail == NONE) h_tail = slot;
 
 }
 
-export fn _start() noreturn {
+// When called with "slave" as argv[1], this process becomes the pane-1 shell.
+export fn _start(argc: usize, argv: [*]const ?[*:0]const u8) noreturn {
+
+    if (argc >= 2 and argv[1] != null and cstr_eql(argv[1].?, "slave")) {
+
+        is_slave_mode = true;
+        run_slave();
+        sys.exit(0);
+
+    }
 
     io.println("BASALT ......... Ready\r\n");
     io.println("Type 'help' for available commands, 'exit' to relaunch.");
@@ -121,7 +128,17 @@ export fn _start() noreturn {
 
         if (split_mode) {
 
-            run_split_iteration(&line_buf);
+            if (active_pane == 0) {
+
+                run_split_iteration(&line_buf);
+
+            } else {
+
+                // Draw split header positioning cursor in pane 1, then proxy.
+                print_split_prompt();
+                proxy_pane1();
+
+            }
 
         } else {
 
@@ -156,51 +173,255 @@ export fn _start() noreturn {
 
 }
 
-// One iteration of the split-pane loop: print split prompt, read input, execute.
+// Slave shell: reads from pipe-based stdin, executes commands with column-aligned output.
+// Does not print its own prompt (parent draws the split header and positions the cursor).
+fn run_slave() noreturn {
+
+    // Initialize the slave's wm module with the split layout so buf_divider_char(),
+    // buf_separator(), and relay_paned() all draw the correct divider.
+    wm.init_split(SPLIT_COL);
+
+    var line_buf: [MAX_LINE]u8 = undefined;
+
+    while (true) {
+
+        // Parent draws the initial prompt via print_split_prompt on the header line.
+        // After every subsequent command (or empty input) we draw our own prompt so
+        // the user always sees a fresh "basalt [cwd]> " in the right pane column.
+
+        const line = read_line_impl(&line_buf, .{ .max_width = MAX_LINE - 1, .split_tab = false });
+
+        if (line.len > 0) {
+
+            history_push(line);
+
+            if (str_eql(line, "exit")) sys.exit(0);
+
+            if (!try_builtin(line)) run_paned(line);
+
+        }
+
+        slave_print_prompt();
+
+    }
+
+}
+
+// Run a command with stdout piped and relayed to pane 1's column.
+// Falls back to run_single on pipe failure.
+fn run_paned(cmd: []const u8) void {
+
+    // Split by '|' to determine if it is a pipeline.
+
+    var stages: [MAX_PIPE_STAGES][]const u8 = undefined;
+    var stage_count: usize = 0;
+    var start: usize = 0;
+
+    for (cmd, 0..) |c, i| {
+
+        if (c == '|') {
+
+            if (stage_count >= MAX_PIPE_STAGES) {
+                run_single(cmd);
+                return;
+            }
+
+            stages[stage_count] = trim(cmd[start..i]);
+            stage_count += 1;
+            start = i + 1;
+
+        }
+
+    }
+
+    stages[stage_count] = trim(cmd[start..]);
+    stage_count += 1;
+
+    for (stages[0..stage_count]) |s| {
+        if (s.len == 0) { run_single(cmd); return; }
+    }
+
+    if (stage_count == 1) {
+
+        run_single_paned(stages[0]);
+
+    } else {
+
+        run_pipeline_paned(stages[0..stage_count]);
+
+    }
+
+}
+
+// Fork a child, pipe its stdout, relay output to pane 1's column.
+fn run_single_paned(cmd: []const u8) void {
+
+    var relay_pipe: [2]usize = undefined;
+
+    if (sys.pipe(&relay_pipe) < 0) {
+        run_single(cmd);
+        return;
+    }
+
+    const child = sys.fork();
+
+    if (child < 0) {
+
+        _ = sys.close(relay_pipe[0]);
+        _ = sys.close(relay_pipe[1]);
+        io.println("basalt: fork failed");
+        return;
+
+    }
+
+    if (child == 0) {
+
+        _ = sys.dup2(relay_pipe[1], 1); // child stdout → relay pipe write end
+        _ = sys.close(relay_pipe[0]);
+        _ = sys.close(relay_pipe[1]);
+        exec_cmd(cmd);
+
+    }
+
+    // Wait for the child to finish so all output is in the pipe buffer, THEN relay
+    // it.  This avoids the race where relay_paned sees writer_count==0 (because the
+    // parent closed the write end) before the child has written anything.
+    _ = sys.waitpid(@intCast(child));
+    _ = sys.close(relay_pipe[1]);
+    wm.relay_paned(relay_pipe[0], SLAVE_COL);
+    _ = sys.close(relay_pipe[0]);
+
+}
+
+// Run a pipeline with the final stage's stdout relayed to pane 1's column.
+fn run_pipeline_paned(stages: []const []const u8) void {
+
+    var pipe_fds: [MAX_PIPE_STAGES - 1][2]usize = undefined;
+    var relay_pipe: [2]usize = undefined;
+    var child_pids: [MAX_PIPE_STAGES]usize = undefined;
+
+    if (sys.pipe(&relay_pipe) < 0) {
+        run_pipeline(stages);
+        return;
+    }
+
+    for (0..stages.len - 1) |i| {
+
+        if (sys.pipe(&pipe_fds[i]) < 0) {
+
+            _ = sys.close(relay_pipe[0]);
+            _ = sys.close(relay_pipe[1]);
+
+            for (0..i) |j| {
+                _ = sys.close(pipe_fds[j][0]);
+                _ = sys.close(pipe_fds[j][1]);
+            }
+
+            run_pipeline(stages);
+            return;
+
+        }
+
+    }
+
+    for (stages, 0..) |cmd, i| {
+
+        const child = sys.fork();
+
+        if (child < 0) {
+
+            io.println("basalt: fork failed in pipeline");
+            break;
+
+        }
+
+        if (child == 0) {
+
+            if (i > 0) _ = sys.dup2(pipe_fds[i - 1][0], 0);
+
+            if (i < stages.len - 1) {
+                _ = sys.dup2(pipe_fds[i][1], 1);
+            } else {
+                // Last stage stdout → relay pipe.
+                _ = sys.dup2(relay_pipe[1], 1);
+            }
+
+            for (0..stages.len - 1) |j| {
+                _ = sys.close(pipe_fds[j][0]);
+                _ = sys.close(pipe_fds[j][1]);
+            }
+
+            _ = sys.close(relay_pipe[0]);
+            _ = sys.close(relay_pipe[1]);
+            exec_cmd(cmd);
+
+        }
+
+        child_pids[i] = @intCast(child);
+
+    }
+
+    // Close the parent's copies of all inter-stage pipe ends so data flows naturally.
+    for (0..stages.len - 1) |j| {
+        _ = sys.close(pipe_fds[j][0]);
+        _ = sys.close(pipe_fds[j][1]);
+    }
+
+    // Wait for all stages to finish so their output is fully buffered before we relay.
+    for (0..stages.len) |i| {
+        _ = sys.waitpid(child_pids[i]);
+    }
+
+    _ = sys.close(relay_pipe[1]);
+    wm.relay_paned(relay_pipe[0], SLAVE_COL);
+    _ = sys.close(relay_pipe[0]);
+
+}
+
+// One iteration of the split-pane loop for pane 0.
 fn run_split_iteration(line_buf: *[MAX_LINE]u8) void {
 
-    // Ensure the process CWD matches the active pane.
+    chdir_pane(0);
 
-    chdir_pane(active_pane);
+    // Draw the full separator+prompt header only on the first iteration after a pane
+    // switch (or split entry).  Subsequent iterations use a plain inline prompt so the
+    // header is not repeated after every command.
 
-    print_split_prompt();
+    if (needs_full_header) {
+        print_split_prompt();
+        needs_full_header = false;
+    } else {
+        print_pane0_prompt_only();
+    }
 
     pane_switched = false;
+    pane_close_requested = false;
+    pane_new_requested = false;
 
-    const max_w = split_input_width(active_pane);
+    const max_w = split_input_width(0);
     const line = read_line_impl(line_buf, .{ .max_width = max_w, .split_tab = true });
-
-    // Handle pane-control keys before inspecting the line.
 
     if (pane_new_requested) {
 
         pane_new_requested = false;
-        // Already in split mode; ignore.
         return;
 
     }
 
     if (pane_switched) {
 
-        save_pane_cwd(active_pane);
-        save_pane_history(active_pane);
-        print_divider_line();
-
-        active_pane = 1 - active_pane;
-
-        load_pane_history(active_pane);
-        chdir_pane(active_pane);
+        save_pane_cwd(0);
+        save_pane_history();
+        active_pane = 1;
+        needs_full_header = true; // pane 1 entry needs its header
         return;
 
     }
 
     if (pane_close_requested) {
 
-        pane_close_requested = false;
-        save_pane_cwd(active_pane);
-        save_pane_history(active_pane);
-        split_mode = false;
-        io.println("Split closed.");
+        save_pane_cwd(0);
+        close_split();
         return;
 
     }
@@ -216,159 +437,345 @@ fn run_split_iteration(line_buf: *[MAX_LINE]u8) void {
 
     }
 
-    execute(line);
+    execute_split_p0(line);
 
-    // Save CWD in case a 'cd' ran.
-
-    save_pane_cwd(active_pane);
-    save_pane_history(active_pane);
-
-    // Print divider lines before the next prompt so the split is visible.
-
-    print_divider_line();
-    print_divider_line();
+    save_pane_cwd(0);
+    save_pane_history();
 
 }
 
-// Print the split prompt: both pane prompts on one line, cursor in active pane.
-fn print_split_prompt() void {
+// Proxy UART input to the slave process while active_pane == 1.
+// Returns when Alt+S or Alt+C is pressed.
+fn proxy_pane1() void {
 
-    const d0 = get_display_cwd(0);
-    const d1 = get_display_cwd(1);
+    while (true) {
 
-    // Prompt text length: "basalt [cwd]> " = 8 + cwd + 3 = 11 + cwd_len
-    const p0_len = 11 + d0.len;
-    const p1_len = 11 + d1.len;
+        const c = io.read_char();
 
-    // Clear current line.
+        if (c == 0x1B) {
 
-    io.print("\r\x1B[2K");
+            const c2 = io.read_char();
 
-    // Pane 0 prompt.
+            // Alt+S: switch back to pane 0.
 
-    io.print("basalt [");
-    io.print(d0);
-    io.print("]> ");
+            if (c2 == 's') {
 
-    // Pad to column 40 (0-indexed) where the divider sits.
+                io.print("\r\n");
+                load_pane_history();
+                chdir_pane(0);
+                active_pane = 0;
+                needs_full_header = true; // pane 0 re-entry needs its header
+                return;
 
-    var col: usize = p0_len;
+            }
 
-    while (col < PANE0_COLS) : (col += 1) io.print(" ");
+            // Alt+C: close split.
 
-    // Divider.
+            if (c2 == 'c') {
 
-    io.print("| ");
+                io.print("\r\n");
+                load_pane_history();
+                chdir_pane(0);
+                needs_full_header = true;
+                close_split();
+                return;
 
-    // Pane 1 prompt (both always use the same "basalt [cwd]> " form).
+            }
 
-    io.print("basalt [");
-    io.print(d1);
-    io.print("]> ");
+            // Alt+N: ignore (already in split mode).
 
-    // Position cursor at the active pane's input start using CHA (CSI <n> G).
+            if (c2 == 'n') continue;
 
-    if (active_pane == 0) {
+            // Forward ESC sequences (arrow keys, etc.) to slave.
 
-        // Move back to after pane 0's prompt: ANSI col p0_len+1 (1-indexed).
+            if (pane1_write_fd >= 0) {
 
-        io.print("\x1B[");
-        io.print_int(p0_len + 1);
-        io.print("G");
+                const esc_seq: [2]u8 = .{ 0x1B, c2 };
+                _ = sys.write(@intCast(pane1_write_fd), &esc_seq);
 
-    } else {
+            }
 
-        // Pane 1 starts at ANSI col 43 (0-indexed col 42, after "| ").
-        // Cursor is already at ANSI col 43 + p1_len — already at the right place.
-        _ = p1_len; // suppress unused warning; cursor is already positioned
+            continue;
+
+        }
+
+        if (pane1_write_fd >= 0) {
+
+            const byte: [1]u8 = .{c};
+            _ = sys.write(@intCast(pane1_write_fd), &byte);
+
+        }
 
     }
 
 }
 
-// Print a single `|` separator line at the pane divider column.
-fn print_divider_line() void {
+// Close the split, kill the slave stdin pipe, and reset to single-pane mode.
+fn close_split() void {
 
-    var i: usize = 0;
-    while (i < PANE0_COLS) : (i += 1) io.print(" ");
-    io.print("|\r\n");
+    if (pane1_write_fd >= 0) {
+
+        // Closing the write end gives the slave an EOF on its stdin pipe.
+
+        _ = sys.close(@intCast(pane1_write_fd));
+        pane1_write_fd = -1;
+
+    }
+
+    if (pane1_read_fd >= 0) {
+
+        _ = sys.close(@intCast(pane1_read_fd));
+        pane1_read_fd = -1;
+
+    }
+
+    split_mode = false;
+    active_pane = 0;
+    wm.init_single();
+    io.println("Split closed.");
 
 }
 
-// Maximum input characters for a pane given its CWD display length.
-fn split_input_width(pane: usize) usize {
+// Draw the split header: separator line + pane 0 prompt + divider + pane 1 prompt.
+// Positions the cursor in the active pane's input area.
+// Called at most once per pane switch (guarded by needs_full_header).
+fn print_split_prompt() void {
 
-    const d = get_display_cwd(pane);
-    const prompt_len = 11 + d.len;
-    const pane_cols: usize = if (pane == 0) PANE0_COLS - 1 else PANE1_COLS - 1;
+    const d0 = get_display_cwd(0);
+    const p0_len = 11 + d0.len; // "basalt [" + cwd + "]> "
 
-    if (prompt_len >= pane_cols) return 2;
+    wm.buf_reset();
+    wm.buf_separator(.top);
 
-    return pane_cols - prompt_len;
+    // Pane 0 prompt.
+
+    wm.buf_str("basalt [");
+    wm.buf_str(d0);
+    wm.buf_str("]> ");
+
+    // Pad to the divider column.
+
+    var col: usize = p0_len;
+
+    while (col < SPLIT_COL) : (col += 1) wm.buf_char(' ');
+
+    wm.buf_divider_char();
+    wm.buf_char(' ');
+
+    // Pane 1 prompt header (slave draws its own prompt after each command; this
+    // header line shows the initial / context-switch prompt for pane 1).
+
+    wm.buf_str("basalt [/]> ");
+
+    // Position cursor in active pane.
+
+    if (active_pane == 0) {
+
+        wm.buf_str("\x1B[");
+        wm.buf_int(p0_len + 1);
+        wm.buf_char('G');
+
+    }
+
+    // For active_pane == 1 cursor is already past "basalt [/]> " in pane 1's area.
+
+    wm.flush();
 
 }
 
-// Return a slice of the pane's CWD, truncated to MAX_CWD_DISP chars from the right.
-fn get_display_cwd(pane: usize) []const u8 {
+// Inline pane-0 prompt: middle separator + prompt on same line as │.
+// Drawing the separator before every prompt gives a continuous-divider feel
+// and naturally re-anchors the UI after a `clear` command.
+fn print_pane0_prompt_only() void {
 
-    const len = pane_cwd_len[pane];
+    const d = get_display_cwd(0);
+    const p0_len = 11 + d.len; // "basalt [" + cwd + "]> "
+
+    wm.buf_reset();
+    wm.buf_separator(.middle); // ─────┼───── \r\n  (cursor now at col 1)
+
+    // Pane 0 prompt text.
+    wm.buf_str("basalt [");
+    wm.buf_str(d);
+    wm.buf_str("]> ");
+
+    // Draw │ at the divider column so the prompt line matches the separator.
+    wm.buf_str("\x1B[");
+    wm.buf_int(SPLIT_COL + 1); // 1-indexed divider column = 41
+    wm.buf_char('G');
+    wm.buf_divider_char();
+
+    // Return cursor to the end of the pane-0 prompt so read_line_impl echoes there.
+    wm.buf_str("\x1B[");
+    wm.buf_int(p0_len + 1);
+    wm.buf_char('G');
+
+    wm.flush();
+
+}
+
+// Slave pane prompt: middle separator + │ + "basalt [cwd]> " in the pane-1 column.
+// The separator before each prompt re-anchors the UI after commands (including
+// `clear`) and gives a continuous-divider feel matching pane 0.
+fn slave_print_prompt() void {
+
+    var cwd_buf: [256]u8 = undefined;
+    const n = sys.getcwd(&cwd_buf);
+
+    wm.buf_reset();
+    wm.buf_str("\r\n"); // ensure we start on a fresh line
+    wm.buf_separator(.middle); // ─────┼───── \r\n  (cursor now at col 1)
+
+    // Draw │ at the divider column, then the prompt text.
+    wm.buf_str("\x1B[");
+    wm.buf_int(SPLIT_COL + 1); // 1-indexed divider column = 41
+    wm.buf_char('G');
+    wm.buf_divider_char();
+    wm.buf_char(' ');
+
+    // "basalt [cwd]> " starts at SLAVE_COL + 1 (1-indexed) = 43.
+    wm.buf_str("basalt [");
+
+    if (n > 1) {
+
+        const cwd = cwd_buf[0..@as(usize, @intCast(n)) - 1];
+        const disp = if (cwd.len <= MAX_CWD_DISP) cwd else cwd[cwd.len - MAX_CWD_DISP ..];
+        wm.buf_str(disp);
+
+    } else {
+
+        wm.buf_str("/");
+
+    }
+
+    wm.buf_str("]> ");
+    wm.flush();
+
+}
+
+// Maximum typeable characters for a pane.
+fn split_input_width(p: usize) usize {
+
+    const pi = wm.pane(p);
+
+    if (p == 0) {
+
+        const d = get_display_cwd(0);
+        const prompt_len = 11 + d.len;
+        const pane_cols = pi.width - 1;
+        if (prompt_len >= pane_cols) return 2;
+        return pane_cols - prompt_len;
+
+    }
+
+    // Pane 1: "basalt [/]> " = 12 chars; width minus divider + space (2 chars).
+    const pane_cols: usize = pi.width - 2;
+    if (12 >= pane_cols) return 2;
+    return pane_cols - 12;
+
+}
+
+fn get_display_cwd(p: usize) []const u8 {
+
+    const len = pane_cwd_len[p];
 
     if (len == 0) return "/";
 
-    const cwd = pane_cwd[pane][0..len];
+    const cwd = pane_cwd[p][0..len];
 
     return if (len <= MAX_CWD_DISP) cwd else cwd[len - MAX_CWD_DISP ..];
 
 }
 
-// Write the current process CWD into pane_cwd[pane].
-fn save_pane_cwd(pane: usize) void {
+fn save_pane_cwd(p: usize) void {
 
     var buf: [256]u8 = undefined;
     const n = sys.getcwd(&buf);
 
     if (n > 0) {
 
-        const len: usize = @as(usize, @intCast(n)) - 1; // exclude NUL
-        @memcpy(pane_cwd[pane][0..len], buf[0..len]);
-        pane_cwd_len[pane] = len;
+        const len: usize = @as(usize, @intCast(n)) - 1;
+        @memcpy(pane_cwd[p][0..len], buf[0..len]);
+        pane_cwd_len[p] = len;
 
     }
 
 }
 
-// chdir to pane_cwd[pane] (NUL-terminate inline before passing to kernel).
-fn chdir_pane(pane: usize) void {
+fn chdir_pane(p: usize) void {
 
-    pane_cwd[pane][pane_cwd_len[pane]] = 0;
-    _ = sys.chdir(@ptrCast(&pane_cwd[pane]));
-
-}
-
-// Copy current global history state into the pane's saved history.
-fn save_pane_history(pane: usize) void {
-
-    pane_h_nodes[pane] = h_nodes;
-    pane_h_head[pane] = h_head;
-    pane_h_tail[pane] = h_tail;
-    pane_h_count[pane] = h_count;
+    pane_cwd[p][pane_cwd_len[p]] = 0;
+    _ = sys.chdir(@ptrCast(&pane_cwd[p]));
 
 }
 
-// Restore a pane's saved history into the global history state.
-fn load_pane_history(pane: usize) void {
+// Save current pane 0 history into the pane history slot (for restore after pane 1 session).
+fn save_pane_history() void {
 
-    h_nodes = pane_h_nodes[pane];
-    h_head = pane_h_head[pane];
-    h_tail = pane_h_tail[pane];
-    h_count = pane_h_count[pane];
+    pane_h_nodes = h_nodes;
+    pane_h_head = h_head;
+    pane_h_tail = h_tail;
+    pane_h_count = h_count;
 
 }
 
-// Activate split-pane mode.
+fn load_pane_history() void {
+
+    h_nodes = pane_h_nodes;
+    h_head = pane_h_head;
+    h_tail = pane_h_tail;
+    h_count = pane_h_count;
+
+}
+
+// Activate split-pane mode: fork a real slave basalt process for pane 1.
 fn enter_split_mode() void {
 
-    // Save current CWD and history to both panes.
+    var slave_stdin: [2]usize = undefined;
+
+    if (sys.pipe(&slave_stdin) < 0) {
+
+        io.println("basalt: cannot create pipe for slave");
+        return;
+
+    }
+
+    const child = sys.fork();
+
+    if (child < 0) {
+
+        _ = sys.close(slave_stdin[0]);
+        _ = sys.close(slave_stdin[1]);
+        io.println("basalt: fork failed");
+        return;
+
+    }
+
+    if (child == 0) {
+
+        // Child: redirect stdin to pipe read end, then exec a fresh basalt slave.
+
+        _ = sys.dup2(slave_stdin[0], 0);
+        _ = sys.close(slave_stdin[0]);
+        _ = sys.close(slave_stdin[1]);
+
+        var slave_argv: [3]?[*:0]const u8 = .{ "basalt", "slave", null };
+        _ = sys.execve("basalt", @ptrCast(&slave_argv));
+        sys.exit(1);
+
+    }
+
+    // Parent: keep BOTH ends. The read end must stay open so the kernel's
+    // pipe.reader_count stays > 0 — pipe_write returns 0 when reader_count == 0,
+    // which would silently discard everything sent to the slave. The slave reads
+    // via pcb.stdin_pipe (a direct index), which bypasses the fd table and is
+    // therefore not counted in reader_count on its own.
+
+    pane1_read_fd  = @intCast(slave_stdin[0]);
+    pane1_write_fd = @intCast(slave_stdin[1]);
+    pane1_pid = @intCast(child);
+
+    // Snapshot current CWD and history for pane 0 restoration.
 
     var buf: [256]u8 = undefined;
     const n = sys.getcwd(&buf);
@@ -378,24 +785,23 @@ fn enter_split_mode() void {
 
         cwd_len = @as(usize, @intCast(n)) - 1;
         @memcpy(pane_cwd[0][0..cwd_len], buf[0..cwd_len]);
-        @memcpy(pane_cwd[1][0..cwd_len], buf[0..cwd_len]);
 
     } else {
 
         pane_cwd[0][0] = '/';
-        pane_cwd[1][0] = '/';
         cwd_len = 1;
 
     }
 
     pane_cwd_len[0] = cwd_len;
-    pane_cwd_len[1] = cwd_len;
+    pane_cwd_len[1] = 0; // slave CWD unknown from parent; show "/"
 
-    save_pane_history(0);
-    save_pane_history(1);
+    save_pane_history();
 
     active_pane = 0;
     split_mode = true;
+    needs_full_header = true;
+    wm.init_split(SPLIT_COL);
 
     io.println("Split: Alt+S to switch  Alt+C to close");
 
@@ -404,11 +810,8 @@ fn enter_split_mode() void {
 /// Parses and executes a command line, handling pipes if present.
 fn execute(line: []const u8) void {
 
-    // Split by '|' into stages.
-
     var stages: [MAX_PIPE_STAGES][]const u8 = undefined;
     var stage_count: usize = 0;
-
     var start: usize = 0;
 
     for (line, 0..) |c, i| {
@@ -416,10 +819,8 @@ fn execute(line: []const u8) void {
         if (c == '|') {
 
             if (stage_count >= MAX_PIPE_STAGES) {
-
                 io.println("basalt: too many pipe stages");
                 return;
-
             }
 
             stages[stage_count] = trim(line[start..i]);
@@ -430,27 +831,19 @@ fn execute(line: []const u8) void {
 
     }
 
-    // Last (or only) segment.
-
     if (stage_count >= MAX_PIPE_STAGES) {
-
         io.println("basalt: too many pipe stages");
         return;
-
     }
 
     stages[stage_count] = trim(line[start..]);
     stage_count += 1;
 
-    // Validate: no empty stages.
-
     for (stages[0..stage_count]) |s| {
 
         if (s.len == 0) {
-
             io.println("basalt: empty command in pipeline");
             return;
-
         }
 
     }
@@ -469,10 +862,22 @@ fn execute(line: []const u8) void {
 
 }
 
-/// Handles `cd`, `path`, `new`, and `close` in the shell process (must not fork).
+/// Handles `cd`, `location`, `new`, and `clear` in-process (must not fork).
 fn try_builtin(line: []const u8) bool {
 
     const t = trim(line);
+
+    // In split/slave mode, intercept `clear` so we can redraw the split UI
+    // instead of letting relay_pane0 pipe the raw escape sequences through
+    // (which would clear the screen with no automatic recovery).
+    if (str_eql(t, "clear")) {
+        if (!split_mode and !is_slave_mode) return false; // single mode: run the binary
+        wm.buf_reset();
+        wm.buf_str("\x1B[2J\x1B[H");
+        wm.flush();
+        if (split_mode) needs_full_header = true; // force full header on next pane-0 prompt
+        return true;
+    }
 
     if (str_eql(t, "location")) {
 
@@ -483,7 +888,7 @@ fn try_builtin(line: []const u8) bool {
 
     if (str_eql(t, "new")) {
 
-        enter_split_mode();
+        if (!is_slave_mode and !split_mode) enter_split_mode();
         return true;
 
     }
@@ -510,19 +915,15 @@ fn builtin_location() void {
     const n = sys.getcwd(&buf);
 
     if (n < 0) {
-
         io.println("location: cannot read current directory");
         return;
-
     }
 
     const len: usize = @intCast(n);
 
     if (len <= 1) {
-
         io.println("/");
         return;
-
     }
 
     io.println(buf[0 .. len - 1]);
@@ -575,10 +976,8 @@ fn builtin_cd(arg: []const u8) void {
     } else {
 
         if (arg.len + 1 > path_buf.len) {
-
             io.println("cd: path too long");
             return;
-
         }
 
         @memcpy(path_buf[0..arg.len], arg);
@@ -588,9 +987,96 @@ fn builtin_cd(arg: []const u8) void {
 
     const r = sys.chdir(@ptrCast(&path_buf));
 
-    if (r < 0) {
+    if (r < 0) io.println("cd: no such directory or not a directory");
 
-        io.println("cd: no such directory or not a directory");
+}
+
+/// Run a single command in split-pane mode (pane 0), piping stdout through
+/// relay_pane0 so every output line gets the vertical divider drawn at SPLIT_COL.
+fn run_single_split_p0(cmd: []const u8) void {
+
+    var relay_pipe: [2]usize = undefined;
+
+    if (sys.pipe(&relay_pipe) < 0) {
+        run_single(cmd); // fallback: no relay
+        return;
+    }
+
+    const child = sys.fork();
+
+    if (child < 0) {
+        _ = sys.close(relay_pipe[0]);
+        _ = sys.close(relay_pipe[1]);
+        run_single(cmd);
+        return;
+    }
+
+    if (child == 0) {
+        _ = sys.dup2(relay_pipe[1], 1);
+        _ = sys.close(relay_pipe[0]);
+        _ = sys.close(relay_pipe[1]);
+        exec_cmd(cmd);
+    }
+
+    _ = sys.waitpid(@intCast(child));
+    _ = sys.close(relay_pipe[1]);
+    wm.relay_pane0(relay_pipe[0]);
+    _ = sys.close(relay_pipe[0]);
+
+}
+
+/// Like execute() but uses run_single_split_p0 for external single commands so
+/// pane-0 output stays bounded by the divider.
+fn execute_split_p0(line: []const u8) void {
+
+    var stages: [MAX_PIPE_STAGES][]const u8 = undefined;
+    var stage_count: usize = 0;
+    var start: usize = 0;
+
+    for (line, 0..) |c, i| {
+
+        if (c == '|') {
+
+            if (stage_count >= MAX_PIPE_STAGES) {
+                io.println("basalt: too many pipe stages");
+                return;
+            }
+
+            stages[stage_count] = trim(line[start..i]);
+            stage_count += 1;
+            start = i + 1;
+
+        }
+
+    }
+
+    if (stage_count >= MAX_PIPE_STAGES) {
+        io.println("basalt: too many pipe stages");
+        return;
+    }
+
+    stages[stage_count] = trim(line[start..]);
+    stage_count += 1;
+
+    for (stages[0..stage_count]) |s| {
+
+        if (s.len == 0) {
+            io.println("basalt: empty command in pipeline");
+            return;
+        }
+
+    }
+
+    if (stage_count == 1) {
+
+        if (try_builtin(stages[0])) return;
+
+        run_single_split_p0(stages[0]);
+
+    } else {
+
+        // Pipelines fall back to normal execution for now.
+        run_pipeline(stages[0..stage_count]);
 
     }
 
@@ -602,10 +1088,8 @@ fn run_single(cmd: []const u8) void {
     const child = sys.fork();
 
     if (child < 0) {
-
         io.println("basalt: fork failed");
         return;
-
     }
 
     if (child == 0) exec_cmd(cmd);
@@ -619,8 +1103,6 @@ fn run_pipeline(stages: []const []const u8) void {
 
     var pipe_fds: [MAX_PIPE_STAGES - 1][2]usize = undefined;
     var child_pids: [MAX_PIPE_STAGES]usize = undefined;
-
-    // Create all pipes first.
 
     for (0..stages.len - 1) |i| {
 
@@ -639,44 +1121,24 @@ fn run_pipeline(stages: []const []const u8) void {
 
     }
 
-    // Fork each stage.
-
     for (stages, 0..) |cmd, i| {
 
         const child = sys.fork();
 
         if (child < 0) {
-
             io.println("basalt: fork failed in pipeline");
             break;
-
         }
 
         if (child == 0) {
 
-            // Connect stdin to previous pipe's read end.
+            if (i > 0) _ = sys.dup2(pipe_fds[i - 1][0], 0);
 
-            if (i > 0) {
-
-                _ = sys.dup2(pipe_fds[i - 1][0], 0);
-
-            }
-
-            // Connect stdout to current pipe's write end.
-
-            if (i < stages.len - 1) {
-
-                _ = sys.dup2(pipe_fds[i][1], 1);
-
-            }
-
-            // Close all pipe fds in the child.
+            if (i < stages.len - 1) _ = sys.dup2(pipe_fds[i][1], 1);
 
             for (0..stages.len - 1) |j| {
-
                 _ = sys.close(pipe_fds[j][0]);
                 _ = sys.close(pipe_fds[j][1]);
-
             }
 
             exec_cmd(cmd);
@@ -687,61 +1149,44 @@ fn run_pipeline(stages: []const []const u8) void {
 
     }
 
-    // Parent: close all pipe fds.
-
     for (0..stages.len - 1) |j| {
         _ = sys.close(pipe_fds[j][0]);
         _ = sys.close(pipe_fds[j][1]);
     }
 
-    // Wait for all children.
-
     for (0..stages.len) |i| {
-
         _ = sys.waitpid(child_pids[i]);
-
     }
 
 }
 
 /// Parse a command string into argv and exec. Called in the child after fork.
-/// Does not return on success; prints an error and exits on failure.
 fn exec_cmd(cmd: []const u8) noreturn {
 
     var args_buf: [MAX_LINE]u8 = undefined;
 
     if (cmd.len >= args_buf.len) {
-
         io.println("basalt: command too long");
         sys.exit(1);
-
     }
 
     @memcpy(args_buf[0..cmd.len], cmd);
 
     var argv: [MAX_ARGS + 1]?[*:0]const u8 = .{null} ** (MAX_ARGS + 1);
     var argc: usize = 0;
-
     var i: usize = 0;
 
     while (i < cmd.len and argc < MAX_ARGS) {
-
-        // Skip spaces.
 
         while (i < cmd.len and args_buf[i] == ' ') i += 1;
 
         if (i >= cmd.len) break;
 
-        // Mark word start.
-
         const word_start = i;
 
         while (i < cmd.len and args_buf[i] != ' ') i += 1;
 
-        // Null-terminate this word in-place.
-
         args_buf[i] = 0;
-
         argv[argc] = @ptrCast(&args_buf[word_start]);
         argc += 1;
 
@@ -753,8 +1198,6 @@ fn exec_cmd(cmd: []const u8) noreturn {
 
     _ = sys.execve(argv[0].?, &argv);
 
-    // Failed, print error and exit.
-
     io.print("basalt: unknown command: ");
     io.println(first_word(cmd));
     sys.exit(1);
@@ -763,24 +1206,15 @@ fn exec_cmd(cmd: []const u8) noreturn {
 
 // Line reading
 
-/// Erase `n` characters from the terminal line by printing backspace-space-backspace sequences.
 fn erase_chars(n: usize) void {
 
     var i: usize = 0;
-
-    while (i < n) : (i += 1) {
-
-        io.print("\x08 \x08");
-
-    }
+    while (i < n) : (i += 1) io.print("\x08 \x08");
 
 }
 
-/// Replace the current terminal line with `new_cmd`.
-/// Moves the cursor to end-of-line first so erase works regardless of cursor position.
 fn replace_line(buf: []u8, pos: *usize, line_len: *usize, new_cmd: []const u8) void {
 
-    // Move cursor to end.
     var k = pos.*;
     while (k < line_len.*) : (k += 1) io.print("\x1B[C");
 
@@ -796,15 +1230,13 @@ fn replace_line(buf: []u8, pos: *usize, line_len: *usize, new_cmd: []const u8) v
 
 }
 
-// Configuration for read_line_impl.
 const ReadConfig = struct {
     max_width: usize,
     split_tab: bool,
 };
 
 /// Read a line from stdin with full editing support.
-/// In split mode (split_tab=true): Tab sets pane_switched=true and returns empty.
-/// max_width limits the number of typeable characters.
+/// In split mode (split_tab=true): Alt+S/Alt+C/Alt+N trigger pane control flags.
 fn read_line_impl(buf: []u8, config: ReadConfig) []u8 {
 
     const effective_max = @min(config.max_width, buf.len - 1);
@@ -818,16 +1250,12 @@ fn read_line_impl(buf: []u8, config: ReadConfig) []u8 {
 
         const c = io.read_char();
 
-        // Enter
-
         if (c == '\r' or c == '\n') {
 
             io.print("\r\n");
             return buf[0..line_len];
 
         }
-
-        // Backspace / DEL: remove the char to the left of the cursor.
 
         if (c == 0x08 or c == 0x7F) {
 
@@ -836,12 +1264,8 @@ fn read_line_impl(buf: []u8, config: ReadConfig) []u8 {
                 pos -= 1;
                 line_len -= 1;
 
-                // Shift buf[pos+1..line_len+1] left by one.
-
                 var k: usize = pos;
                 while (k < line_len) : (k += 1) buf[k] = buf[k + 1];
-
-                // Move cursor back, redraw tail, erase the now-extra char, restore cursor.
 
                 io.print("\x08");
                 io.print(buf[pos..line_len]);
@@ -856,14 +1280,9 @@ fn read_line_impl(buf: []u8, config: ReadConfig) []u8 {
 
         }
 
-        // ESC: ANSI escape sequences (arrow keys).
-        // Handles CSI (ESC [ X) and SS3 (ESC O X) for up/down/left/right.
-
         if (c == 0x1B) {
 
             const c2 = io.read_char();
-
-            // Alt+N: open a new pane (works in any mode).
 
             if (c2 == 'n') {
 
@@ -873,8 +1292,6 @@ fn read_line_impl(buf: []u8, config: ReadConfig) []u8 {
 
             }
 
-            // Alt+S: switch pane (split mode only).
-
             if (c2 == 's' and config.split_tab) {
 
                 io.print("\r\n");
@@ -882,8 +1299,6 @@ fn read_line_impl(buf: []u8, config: ReadConfig) []u8 {
                 return buf[0..0];
 
             }
-
-            // Alt+C: close active pane (split mode only).
 
             if (c2 == 'c' and config.split_tab) {
 
@@ -898,8 +1313,6 @@ fn read_line_impl(buf: []u8, config: ReadConfig) []u8 {
                 const c3 = io.read_char();
 
                 if (c3 == 'A') {
-
-                    // Up arrow: older history entry.
 
                     if (h_head == NONE) { continue; }
 
@@ -918,12 +1331,9 @@ fn read_line_impl(buf: []u8, config: ReadConfig) []u8 {
                     }
 
                     const src = h_nodes[nav_cursor].cmd[0..h_nodes[nav_cursor].len];
-                    const capped = src[0..@min(src.len, effective_max)];
-                    replace_line(buf, &pos, &line_len, capped);
+                    replace_line(buf, &pos, &line_len, src[0..@min(src.len, effective_max)]);
 
                 } else if (c3 == 'B') {
-
-                    // Down arrow: newer history entry.
 
                     if (nav_cursor == NONE) { continue; }
 
@@ -938,31 +1348,22 @@ fn read_line_impl(buf: []u8, config: ReadConfig) []u8 {
 
                         nav_cursor = newer;
                         const src = h_nodes[nav_cursor].cmd[0..h_nodes[nav_cursor].len];
-                        const capped = src[0..@min(src.len, effective_max)];
-                        replace_line(buf, &pos, &line_len, capped);
+                        replace_line(buf, &pos, &line_len, src[0..@min(src.len, effective_max)]);
 
                     }
 
                 } else if (c3 == 'C') {
 
-                    // Right arrow: move cursor right.
-
                     if (pos < line_len) {
-
                         pos += 1;
                         io.print("\x1B[C");
-
                     }
 
                 } else if (c3 == 'D') {
 
-                    // Left arrow: move cursor left.
-
                     if (pos > 0) {
-
                         pos -= 1;
                         io.print("\x1B[D");
-
                     }
 
                 }
@@ -973,38 +1374,28 @@ fn read_line_impl(buf: []u8, config: ReadConfig) []u8 {
 
         }
 
-        // Tab: always complete (same in both modes).
-
         if (c == 0x09) {
 
             while (pos < line_len) : (pos += 1) io.print("\x1B[C");
 
             tab_complete(buf, &pos);
-
             line_len = pos;
             nav_cursor = NONE;
-
             continue;
 
         }
-
-        // Ignore other non-printable characters.
 
         if (c < 0x20) continue;
 
         nav_cursor = NONE;
 
-        if (line_len >= effective_max) continue; // buffer or width full
-
-        // Insert char at cursor: shift buf[pos..line_len] right by one.
+        if (line_len >= effective_max) continue;
 
         var k: usize = line_len;
         while (k > pos) : (k -= 1) buf[k] = buf[k - 1];
 
         buf[pos] = c;
         line_len += 1;
-
-        // Print from cursor to end of line, then reposition cursor to pos+1.
 
         io.print(buf[pos..line_len]);
         pos += 1;
@@ -1018,14 +1409,8 @@ fn read_line_impl(buf: []u8, config: ReadConfig) []u8 {
 
 // Tab completion
 
-/// Complete the current partial word in buf as a directory path.
-/// Splits the trailing word at the last `/` to get a dir and a name prefix,
-/// lists that directory, and filters for directories matching the prefix.
-/// One match: appends the rest of the name and a trailing `/`.
-/// Multiple matches: prints the options on a new line, then reprints the prompt.
+/// Complete the current partial word as a directory path.
 fn tab_complete(buf: []u8, pos: *usize) void {
-
-    // Find the start of the current word (scan back past non-space chars).
 
     var word_start = pos.*;
 
@@ -1035,8 +1420,6 @@ fn tab_complete(buf: []u8, pos: *usize) void {
 
     const word = buf[word_start..pos.*];
 
-    // Split word at the last `/` to get the directory and the name prefix.
-
     var slash_pos: ?usize = null;
 
     for (word, 0..) |ch, i| {
@@ -1045,8 +1428,6 @@ fn tab_complete(buf: []u8, pos: *usize) void {
 
     const dir_part: []const u8 = if (slash_pos) |sp| word[0 .. sp + 1] else "";
     const prefix: []const u8 = if (slash_pos) |sp| word[sp + 1 ..] else word;
-
-    // Build a null-terminated path for the directory to list.
 
     var dir_buf: [MAX_LINE]u8 = undefined;
     var dir_path: ?[*:0]const u8 = null;
@@ -1059,12 +1440,8 @@ fn tab_complete(buf: []u8, pos: *usize) void {
 
     }
 
-    // List the target directory.
-
     var list_buf: [4096]u8 = undefined;
     const list_n = sys.listfiles_in(&list_buf, dir_path);
-
-    // Collect directories whose names start with `prefix`.
 
     const MAX_MATCHES = 16;
     const NAME_MAX = 32;
@@ -1077,32 +1454,17 @@ fn tab_complete(buf: []u8, pos: *usize) void {
 
     while (i < list_n and match_count < MAX_MATCHES) {
 
-        // Entry layout: name\0 kind_char\0 size\0 perms\0 inode\0 owner\0 capacity\0
-
         const name_start = i;
 
         while (i < list_n and list_buf[i] != 0) i += 1;
 
         const name = list_buf[name_start..i];
-        i += 1; // past name NUL
+        i += 1;
 
         const kind = if (i < list_n) list_buf[i] else 0;
-        i += 1; // past kind char
-        if (i < list_n) i += 1; // past kind NUL
-
-        // Skip size string.
-
-        while (i < list_n and list_buf[i] != 0) i += 1;
-        if (i < list_n) i += 1; // past size NUL
-
-        // Skip perms, inode, owner, capacity strings.
-
-        while (i < list_n and list_buf[i] != 0) i += 1;
+        i += 1;
         if (i < list_n) i += 1;
-        while (i < list_n and list_buf[i] != 0) i += 1;
-        if (i < list_n) i += 1;
-        while (i < list_n and list_buf[i] != 0) i += 1;
-        if (i < list_n) i += 1;
+
         while (i < list_n and list_buf[i] != 0) i += 1;
         if (i < list_n) i += 1;
 
@@ -1121,8 +1483,6 @@ fn tab_complete(buf: []u8, pos: *usize) void {
 
     if (match_count == 1) {
 
-        // Append the remaining characters of the single match, then `/`.
-
         const rest = matches[0][prefix.len..match_lens[0]];
         const slash: []const u8 = "/";
 
@@ -1139,15 +1499,11 @@ fn tab_complete(buf: []u8, pos: *usize) void {
 
     } else {
 
-        // Print all matching names, then redraw the prompt and current input.
-
         io.print("\r\n");
 
         for (0..match_count) |j| {
-
             io.print(matches[j][0..match_lens[j]]);
             io.print("/  ");
-
         }
 
         io.print("\r\n");
@@ -1172,47 +1528,45 @@ fn starts_with(s: []const u8, prefix: []const u8) bool {
 
 // String helpers
 
-/// Extract the first whitespace-delimited word from a string.
 fn first_word(s: []const u8) []const u8 {
 
     var start: usize = 0;
-
     while (start < s.len and s[start] == ' ') start += 1;
-
     var end = start;
-
     while (end < s.len and s[end] != ' ') end += 1;
-
     return s[start..end];
 
 }
 
-/// Trim leading and trailing spaces.
 fn trim(s: []const u8) []const u8 {
 
     var start: usize = 0;
-
     while (start < s.len and s[start] == ' ') start += 1;
-
     var end: usize = s.len;
-
     while (end > start and s[end - 1] == ' ') end -= 1;
-
     return s[start..end];
 
 }
 
-/// Compare two slices for equality.
 fn str_eql(a: []const u8, b: []const u8) bool {
 
     if (a.len != b.len) return false;
-
     for (a, b) |x, y| {
-
         if (x != y) return false;
+    }
+    return true;
 
+}
+
+// Compare a null-terminated C string with a Zig string literal.
+fn cstr_eql(s: [*:0]const u8, literal: []const u8) bool {
+
+    var i: usize = 0;
+
+    while (i < literal.len) : (i += 1) {
+        if (s[i] != literal[i]) return false;
     }
 
-    return true;
+    return s[literal.len] == 0;
 
 }
