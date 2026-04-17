@@ -203,25 +203,18 @@ pub fn build(b: *std.Build) void {
 
     };
 
-    // qemu: run with SMP (no persistent disk)
-    const qemu_cmd = b.addSystemCommand(&qemu_base);
+    // qemu: run with SMP + persistent disk (preserves FS across runs)
+    const qemu_cmd = b.addSystemCommand(&(qemu_base ++ disk_flags));
     qemu_cmd.step.dependOn(b.getInstallStep());
 
-    const qemu_step = b.step("qemu", "Run kernel in QEMU (4 cores, no disk)");
+    const qemu_step = b.step("qemu", "Run kernel in QEMU (4 cores, persistent disk)");
     qemu_step.dependOn(&qemu_cmd.step);
 
-    // qemu-persist: run with SMP + persistent disk (preserves FS across runs)
-    const qemu_persist_cmd = b.addSystemCommand(&(qemu_base ++ disk_flags));
-    qemu_persist_cmd.step.dependOn(b.getInstallStep());
-
-    const qemu_persist_step = b.step("qemu-persist", "Run kernel in QEMU with persistent disk");
-    qemu_persist_step.dependOn(&qemu_persist_cmd.step);
-
     // qemu-debug: run with GDB stub (halted at start)
-    const qemu_debug_cmd = b.addSystemCommand(&(qemu_base ++ [_][]const u8{ "-s", "-S" }));
+    const qemu_debug_cmd = b.addSystemCommand(&(qemu_base ++ disk_flags ++ [_][]const u8{ "-s", "-S" }));
     qemu_debug_cmd.step.dependOn(b.getInstallStep());
 
-    const qemu_debug_step = b.step("qemu-debug", "Run kernel in QEMU with GDB stub on :1234 (halted)");
+    const qemu_debug_step = b.step("qemu-debug", "Run kernel in QEMU with persistent disk and GDB stub on :1234 (halted)");
     qemu_debug_step.dependOn(&qemu_debug_cmd.step);
 
 }
