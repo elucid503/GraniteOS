@@ -15,15 +15,15 @@ export fn _start() noreturn {
     io.println("A minimal ARM64 operating system built from scratch in Zig.\r\n");
 
     io.println("Features:");
-    io.println("  - Preemptive round-robin scheduler");
+    io.println("  - Preemptive round-robin scheduler with context switching");
     io.println("  - Per-process virtual memory with 4-level page tables");
     io.println("  - ELF binary loading and fork/exec process model");
     io.println("  - Pipe-based IPC with shell pipeline support");
     io.println("  - Signal delivery and handling");
     io.println("  - SMP multi-core support");
     io.println("  - Persistent filesystem");
-    io.println("  - BASALT interactive shell");
-    io.println("  - SLATE init system\r\n");
+    io.println("  - SLATE init system");
+    io.println("  - BASALT shell\r\n");
 
     io.println("Type 'help' to see available commands.");
     io.println("");

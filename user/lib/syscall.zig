@@ -98,9 +98,7 @@ pub fn fork() isize {
 
 }
 
-/// Replace the current process image with the named embedded binary.
-/// argv is a null-terminated array of null-terminated string pointers (or null for no args).
-/// On success the new program receives argc in x0 and argv in x1.
+/// Replaces the current process image. argv is a null-terminated pointer array (or null). On success the new program receives argc in x0, argv in x1.
 pub fn execve(path: [*:0]const u8, argv: ?[*]const ?[*:0]const u8) isize {
 
     return @bitCast(raw(.{
@@ -368,8 +366,7 @@ pub fn isatty(fd: usize) bool {
 
 }
 
-// Raw syscall: pass any subset of x0–x5 as arguments.
-// Only fields set in Args are placed in registers; the rest default to 0.
+// Raw syscall: unset fields default to 0
 const Args = struct {
 
     nr: usize,

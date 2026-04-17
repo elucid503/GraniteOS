@@ -21,7 +21,7 @@ const X30_OFFSET: usize = 240;
 const ELR_OFFSET: usize = 248;
 const SP_EL0_OFFSET: usize = 264;
 
-/// Send a signal to the target process. Returns true on success.
+/// Sends a signal to the target process. Returns true on success.
 pub fn send(target_pid: u32, sig: u3) bool {
 
     if (target_pid >= scheduler.process_count) return false;
@@ -31,7 +31,7 @@ pub fn send(target_pid: u32, sig: u3) bool {
 
     if (pcb.state == .empty or pcb.state == .zombie) return false;
 
-    // Resume is special: it unblocks a stopped process rather than pending
+    // SIGCONT unblocks a stopped process rather than pending
     if (sig == @intFromEnum(Signal.cont)) {
 
         if (pcb.stopped_by_signal) {
@@ -50,7 +50,7 @@ pub fn send(target_pid: u32, sig: u3) bool {
 
 }
 
-/// Register a signal handler. handler = 0 restores default behavior.
+/// Registers a signal handler. handler = 0 restores default behavior.
 pub fn set_handler(sig: u3, handler: usize) bool {
 
     if (sig >= SIGNAL_COUNT) return false;
@@ -62,8 +62,7 @@ pub fn set_handler(sig: u3, handler: usize) bool {
 
 }
 
-/// Check pending signals for the current process and deliver the first one.
-/// Called on the return path from syscalls and IRQs before eret to user space.
+/// Checks pending signals for the current process and delivers the first one. Called before eret to user space.
 pub fn check_and_deliver(saved_sp: usize) usize {
 
     const pcb = scheduler.current_process();
@@ -82,8 +81,7 @@ pub fn check_and_deliver(saved_sp: usize) usize {
 
         if (handler != 0) {
 
-            // Deliver to user handler: save context, rewrite exception frame
-
+            // Save context and rewrite exception frame to redirect to the user handler
             const frame: [*]u8 = @ptrFromInt(saved_sp);
 
             pcb.saved_signal_elr = read_u64(frame, ELR_OFFSET);
@@ -118,7 +116,7 @@ pub fn check_and_deliver(saved_sp: usize) usize {
 
             },
 
-            .cont => {}, // no default action for continue
+            .cont => {},
 
         }
 
@@ -128,7 +126,7 @@ pub fn check_and_deliver(saved_sp: usize) usize {
 
 }
 
-/// Restore the context saved before signal delivery. Called by SYS_SIGRETURN.
+/// Restores context saved before signal delivery. Called by SYS_SIGRETURN.
 pub fn sigreturn(saved_sp: usize) usize {
 
     const pcb = scheduler.current_process();

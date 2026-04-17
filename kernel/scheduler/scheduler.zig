@@ -1,8 +1,4 @@
 // kernel/scheduler/scheduler.zig - SMP-aware round-robin process scheduler
-//
-// Each core tracks its own current process via current_indices[core_id].
-// A shared mutex protects all process table mutations. Process 0 serves as
-// core 0's idle task; secondary cores use dedicated idle stacks.
 
 const page_table = @import("../memory/page_table.zig");
 const mutex = @import("../sync/mutex.zig");
@@ -12,7 +8,7 @@ pub const KERNEL_STACK_SIZE: usize = 8192;
 pub const MAX_PROCESSES: usize = 16;
 pub const MAX_CORES: usize = 4;
 
-const FRAME_SIZE: usize = 272; // Must match boot/vectors.S
+const FRAME_SIZE: usize = 272; // must match boot/vectors.S
 const ELR_OFFSET: usize = 248;
 const SPSR_OFFSET: usize = 256;
 const SP_EL0_OFFSET: usize = 264;
@@ -20,8 +16,7 @@ const SP_EL0_OFFSET: usize = 264;
 const SPSR_EL1H: u64 = 0x5; // EL1h, interrupts enabled
 const SPSR_EL0T: u64 = 0x0; // EL0t, interrupts enabled
 
-/// Sentinel: core is idle (no user process scheduled).
-const IDLE: usize = 0xFFFF;
+const IDLE: usize = 0xFFFF; // sentinel: core has no user process scheduled
 
 pub const ProcessState = enum { empty, ready, running, blocked, zombie };
 
@@ -30,49 +25,36 @@ pub const SIGNAL_COUNT: usize = 4;
 
 pub const FdKind = enum { none, file, pipe };
 
-/// Per-process file descriptor entry (fds 3+ map here; 0-2 are always UART).
 pub const FdEntry = struct {
 
     active: bool = false,
     kind: FdKind = .none,
-    entry: u8 = 0, // index into global file table or pipe table
+    entry: u8 = 0, // index into file table or pipe table
     offset: usize = 0, // read/write cursor (files only)
     can_read: bool = false,
     can_write: bool = false,
 
 };
 
-/// Process Control Block - everything needed to pause and resume a process.
+/// Process Control Block: everything needed to pause and resume a process.
 pub const PCB = struct {
 
     pid: u32,
     state: ProcessState,
 
-    /// Physical address of the L0 page table (loaded into TTBR0_EL1 on context switch).
-    page_table_root: usize,
-
-    /// Saved SP_EL1 when not running (points into kernel_stack).
-    kernel_stack_pointer: usize,
-
-    /// Current user heap break address; 0 for kernel tasks.
-    user_brk: usize,
-
-    /// PID this process is waiting on (valid when state == .blocked).
-    wait_target_pid: u32,
+    page_table_root: usize, // physical address of L0 page table, loaded into TTBR0_EL1 on context switch
+    kernel_stack_pointer: usize, // saved SP_EL1 when not running (points into kernel_stack)
+    user_brk: usize, // current user heap break; 0 for kernel tasks
+    wait_target_pid: u32, // PID this process is blocked waiting on
 
     // File descriptors
 
     file_descriptors: [MAX_OPEN_FILES]FdEntry = [_]FdEntry{.{}} ** MAX_OPEN_FILES,
 
-    /// Pipe index this process is blocked on (-1 = not waiting).
-    waiting_on_pipe: i8 = -1,
-
-    /// Pipe-based redirects for stdin/stdout (-1 = use UART).
-    stdin_pipe: i8 = -1,
-    stdout_pipe: i8 = -1,
-
-    /// Current directory: logical root (`0xFF`) or a directory inode index in the ramfs table.
-    fs_cwd: u8 = 0xFF,
+    waiting_on_pipe: i8 = -1, // pipe index this process is blocked on (-1 = not waiting)
+    stdin_pipe: i8 = -1, // pipe redirect for stdin (-1 = use UART)
+    stdout_pipe: i8 = -1, // pipe redirect for stdout (-1 = use UART)
+    fs_cwd: u8 = 0xFF, // current directory: ROOT_DIR (0xFF) or a directory inode index
 
     // Signal state
 
@@ -81,34 +63,26 @@ pub const PCB = struct {
     signal_delivering: bool = false,
     stopped_by_signal: bool = false,
 
-    /// Saved context for signal return (populated on signal delivery).
-    saved_signal_elr: u64 = 0,
+    saved_signal_elr: u64 = 0, // saved context for signal return, populated on signal delivery
     saved_signal_sp: u64 = 0,
     saved_signal_x0: u64 = 0,
     saved_signal_x30: u64 = 0,
 
-    /// Dedicated kernel stack for exception and syscall handling.
     kernel_stack: [KERNEL_STACK_SIZE]u8 align(16),
 
 };
 
 pub var processes: [MAX_PROCESSES]PCB = undefined;
-
 pub var process_count: usize = 0;
 
-/// Per-core current process index (IDLE = no process scheduled).
-var current_indices: [MAX_CORES]usize = [_]usize{IDLE} ** MAX_CORES;
+var current_indices: [MAX_CORES]usize = [_]usize{IDLE} ** MAX_CORES; // per-core current process index
+var idle_saved_sp: [MAX_CORES]usize = [_]usize{0} ** MAX_CORES; // per-core saved idle stack pointer
 
-/// Per-core saved idle stack pointer (the WFE frame to return to when nothing is ready).
-var idle_saved_sp: [MAX_CORES]usize = [_]usize{0} ** MAX_CORES;
-
-/// Number of active cores (set during SMP bringup).
 pub var core_count: usize = 1;
 
-/// Protects process table and scheduling state.
 var sched_lock: mutex.Mutex = .{};
 
-/// Read the current core ID from MPIDR_EL1.Aff0.
+/// Returns the current core ID from MPIDR_EL1.Aff0.
 pub fn get_core_id() usize {
 
     return asm volatile ("mrs %[out], mpidr_el1"
@@ -120,8 +94,6 @@ pub fn get_core_id() usize {
 pub fn init() void {
 
     for (&processes) |*p| p.state = .empty;
-
-    // Process 0: idle task running on the boot stack and boot page table.
 
     processes[0] = .{
 
@@ -140,7 +112,7 @@ pub fn init() void {
 
 }
 
-/// Register a secondary core as active. Called from kmain_secondary.
+/// Registers a secondary core as active. Called from kmain_secondary.
 pub fn register_core(core_id: usize) void {
 
     if (core_id > 0 and core_id < MAX_CORES) {
@@ -155,7 +127,7 @@ pub fn register_core(core_id: usize) void {
 
 }
 
-/// Spawn a kernel-mode (EL1) task.
+/// Spawns a kernel-mode (EL1) task.
 pub fn spawn_kernel_task(entry_point: *const fn () noreturn) void {
 
     sched_lock.lock();
@@ -183,7 +155,7 @@ pub fn spawn_kernel_task(entry_point: *const fn () noreturn) void {
 
 }
 
-/// Spawn a user-mode (EL0) task with a pre-built page table.
+/// Spawns a user-mode (EL0) task with a pre-built page table.
 pub fn spawn_user_task(entry_point: usize, user_stack_top: usize, initial_brk: usize, l0_pa: usize) void {
 
     sched_lock.lock();
@@ -211,7 +183,7 @@ pub fn spawn_user_task(entry_point: usize, user_stack_top: usize, initial_brk: u
 
 }
 
-/// Timer tick: save current SP, advance to next ready process, return its SP.
+/// Saves the current SP, advances to the next ready process, and returns its SP.
 pub fn tick(saved_sp: usize) usize {
 
     const core = get_core_id();
@@ -223,7 +195,6 @@ pub fn tick(saved_sp: usize) usize {
 
     if (idx == IDLE) {
 
-        // Coming from idle - save idle SP for this core
         idle_saved_sp[core] = saved_sp;
 
     } else if (idx < MAX_PROCESSES and processes[idx].state == .running) {
@@ -237,9 +208,7 @@ pub fn tick(saved_sp: usize) usize {
 
 }
 
-/// Mark the current process zombie, wake any process waiting on this PID,
-/// and switch to the next ready process. If a waiter exists, the zombie is
-/// immediately reaped (marked empty) so the slot can be reused.
+/// Marks the current process zombie, wakes any waiter, and switches to the next ready process.
 pub fn exit_current(saved_sp: usize) usize {
 
     const core = get_core_id();
@@ -273,15 +242,13 @@ pub fn exit_current(saved_sp: usize) usize {
 
     }
 
-    // If a waiter was found, the zombie is reaped immediately.
-    if (reaped) exiting.state = .empty;
+    if (reaped) exiting.state = .empty; // reap immediately if a waiter was found
 
     return advance_for_core(core);
 
 }
 
-/// Block the current process until the target PID exits.
-/// Returns immediately if the target is already zombie (and reaps it).
+/// Blocks the current process until target_pid exits. Returns immediately if the target is already zombie.
 pub fn wait_on(saved_sp: usize, target_pid: u32) usize {
 
     const core = get_core_id();
@@ -293,14 +260,13 @@ pub fn wait_on(saved_sp: usize, target_pid: u32) usize {
 
     if (processes[target_pid].state == .zombie) {
 
-        processes[target_pid].state = .empty; // Reap
+        processes[target_pid].state = .empty;
         const x0_ptr: *u64 = @ptrFromInt(saved_sp);
         x0_ptr.* = @intCast(target_pid);
         return saved_sp;
 
     }
 
-    // Block until target exits.
     const idx = current_indices[core];
     if (idx == IDLE or idx >= MAX_PROCESSES) return saved_sp;
 
@@ -312,7 +278,7 @@ pub fn wait_on(saved_sp: usize, target_pid: u32) usize {
 
 }
 
-/// Block the current process and switch to the next ready process.
+/// Blocks the current process and switches to the next ready process.
 pub fn block_current(saved_sp: usize) usize {
 
     const core = get_core_id();
@@ -330,7 +296,7 @@ pub fn block_current(saved_sp: usize) usize {
 
 }
 
-/// Wake all processes blocked on a pipe read for the given pipe index.
+/// Wakes all processes blocked on a pipe read for the given pipe index.
 pub fn wake_pipe_waiters(pipe_index: u8) void {
 
     sched_lock.lock();
@@ -349,7 +315,7 @@ pub fn wake_pipe_waiters(pipe_index: u8) void {
 
 }
 
-/// Return a pointer to the PCB for the given PID, or null if out of range.
+/// Returns a pointer to the PCB for the given PID, or null if out of range.
 pub fn get_process(pid: u32) ?*PCB {
 
     if (pid >= process_count) return null;
@@ -357,20 +323,19 @@ pub fn get_process(pid: u32) ?*PCB {
 
 }
 
-/// Return a pointer to the currently running PCB on this core.
+/// Returns a pointer to the currently running PCB on this core.
 pub fn current_process() *PCB {
 
     const core = get_core_id();
     const idx = current_indices[core];
 
-    // Idle falls back to process 0 (safe: idle uses boot page table)
-    if (idx == IDLE or idx >= MAX_PROCESSES) return &processes[0];
+    if (idx == IDLE or idx >= MAX_PROCESSES) return &processes[0]; // idle falls back to process 0
 
     return &processes[idx];
 
 }
 
-/// Return true if the given PID exists and is in the zombie state.
+/// Returns true if the given PID is in the zombie state.
 pub fn is_zombie(pid: u32) bool {
 
     if (pid >= process_count) return false;
@@ -378,10 +343,7 @@ pub fn is_zombie(pid: u32) bool {
 
 }
 
-/// Clone the current process into a new PCB, copying its exception frame.
-/// The caller supplies the child's page table root and the saved kernel SP
-/// (which points to the exception frame to copy).
-/// Returns the child PID, or null if no free slot is available.
+/// Clones the current process into a new PCB, copying the exception frame. Returns the child PID, or null if no free slot.
 pub fn fork_user_task(parent_frame_sp: usize, child_l0: usize) ?u32 {
 
     const core = get_core_id();
@@ -394,27 +356,26 @@ pub fn fork_user_task(parent_frame_sp: usize, child_l0: usize) ?u32 {
     if (parent_idx == IDLE or parent_idx >= MAX_PROCESSES) return null;
 
     const parent = &processes[parent_idx];
-    const child  = &processes[pid];
+    const child = &processes[pid];
 
     child.* = .{
 
-        .pid                  = @intCast(pid),
-        .state                = .ready,
-        .page_table_root      = child_l0,
+        .pid = @intCast(pid),
+        .state = .ready,
+        .page_table_root = child_l0,
         .kernel_stack_pointer = 0,
-        .user_brk             = parent.user_brk,
-        .wait_target_pid      = 0,
-        .file_descriptors     = parent.file_descriptors,
-        .stdin_pipe           = parent.stdin_pipe,
-        .stdout_pipe          = parent.stdout_pipe,
-        .fs_cwd               = parent.fs_cwd,
-        .signal_handlers      = parent.signal_handlers,
-        .kernel_stack         = undefined,
+        .user_brk = parent.user_brk,
+        .wait_target_pid = 0,
+        .file_descriptors = parent.file_descriptors,
+        .stdin_pipe = parent.stdin_pipe,
+        .stdout_pipe = parent.stdout_pipe,
+        .fs_cwd = parent.fs_cwd,
+        .signal_handlers = parent.signal_handlers,
+        .kernel_stack = undefined,
 
     };
 
-    // Place a copy of the parent's exception frame at the top of the child's kernel stack.
-
+    // Copy parent's exception frame to the child's kernel stack; x0 = 0 (fork returns 0 in child)
     const child_stack_top = @intFromPtr(&child.kernel_stack) + KERNEL_STACK_SIZE;
     const child_sp = child_stack_top - FRAME_SIZE;
 
@@ -423,7 +384,6 @@ pub fn fork_user_task(parent_frame_sp: usize, child_l0: usize) ?u32 {
 
     @memcpy(child_bytes[0..FRAME_SIZE], parent_bytes[0..FRAME_SIZE]);
 
-    // x0 is the first field of the frame; fork() returns 0 to the child.
     @as(*u64, @ptrFromInt(child_sp)).* = 0;
 
     child.kernel_stack_pointer = child_sp;
@@ -432,8 +392,7 @@ pub fn fork_user_task(parent_frame_sp: usize, child_l0: usize) ?u32 {
 
 }
 
-/// Finds a free (empty) process slot, reusing reaped slots before extending.
-/// Caller must hold sched_lock.
+// Finds a free (empty) process slot, reusing reaped slots before extending. Caller must hold sched_lock.
 fn find_free_slot() ?usize {
 
     for (1..process_count) |i| {
@@ -471,12 +430,9 @@ fn build_initial_frame(sp: usize, elr: usize, spsr: u64, sp_el0: usize) void {
 
 }
 
-/// Find the next ready user process for this core. Skip processes running
-/// on other cores (state == .running). Fall back to idle if nothing is ready.
-/// Caller must hold sched_lock.
+// Selects the next ready user process for this core (skips index 0 = idle task). Caller must hold sched_lock.
 fn advance_for_core(core: usize) usize {
 
-    // Scan all process slots for a ready one (skip index 0 = idle task)
     var start: usize = 1;
     var tries: usize = 0;
 
@@ -506,13 +462,11 @@ fn advance_for_core(core: usize) usize {
 
 }
 
-/// Return to idle on this core.
 fn go_idle(core: usize) usize {
 
     current_indices[core] = IDLE;
     page_table.switch_to(page_table.boot_root());
 
-    // Core 0 uses process 0 as its idle task
     if (core == 0) {
 
         current_indices[0] = 0;

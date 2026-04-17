@@ -1,6 +1,6 @@
-// kernel/scheduler/timer.zig - ARM Generic Timer (EL1 physical timer)
+// kernel/scheduler/timer.zig - ARM Generic Timer (EL1 physical timer, PPI INTID 30)
 
-pub const INTERRUPT_ID: u32 = 30; // Physical private peripheral interrupt (PPI) for the EL1 physical timer
+pub const INTERRUPT_ID: u32 = 30;
 
 var ticks_per_quantum: u64 = 0;
 
@@ -12,10 +12,10 @@ pub fn init() void {
 
     );
 
-    ticks_per_quantum = frequency / 10; // 100ms
+    ticks_per_quantum = frequency / 10; // 100ms quantum
 
     asm volatile ("msr cntp_tval_el0, %[val]" : : [val] "r" (ticks_per_quantum));
-    asm volatile ("msr cntp_ctl_el0, %[val]"  : : [val] "r" (@as(u64, 1)));
+    asm volatile ("msr cntp_ctl_el0, %[val]" : : [val] "r" (@as(u64, 1)));
 
 }
 

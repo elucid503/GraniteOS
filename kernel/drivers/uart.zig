@@ -2,6 +2,8 @@
 
 const UART_BASE: usize = 0x09000000;
 
+// Constants for the UART registers, based on the PL011 specification. These are volatile pointers to memory-mapped I/O.
+
 const data_register = @as(*volatile u32, @ptrFromInt(UART_BASE + 0x000));
 const flag_register = @as(*volatile u32, @ptrFromInt(UART_BASE + 0x018));
 const baud_int_divisor = @as(*volatile u32, @ptrFromInt(UART_BASE + 0x024));
@@ -16,8 +18,10 @@ const tx_fifo_full: u32 = 1 << 5; // Flag register bit 5
 pub fn init() void {
 
     control.* = 0; // Disable UART before reconfiguring
+
     baud_int_divisor.* = 39;
     baud_frac_divisor.* = 4;
+
     line_control.* = (1 << 4) | (0b11 << 5); // WLEN=0b11 -> 8-bit words, FIFO enabled
     control.* = (1 << 0) | (1 << 8) | (1 << 9); // Enable UART, TX, RX
 
@@ -25,11 +29,12 @@ pub fn init() void {
 
 pub fn putchar(c: u8) void {
 
-    while (flag_register.* & tx_fifo_full != 0) {} // Spin until TX FIFO has space
+    while (flag_register.* & tx_fifo_full != 0) {} // Spins until TX FIFO has space
     data_register.* = c;
 
 }
 
+/// Print a null-terminated string to the UART. The caller must ensure the string is valid and null-terminated.
 pub fn print(s: []const u8) void {
 
     for (s) |c| {

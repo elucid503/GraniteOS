@@ -1,7 +1,4 @@
-// user/sched_test.zig: demo of preemptive scheduling across forked processes
-//
-// Uses atomic printing to prevent scheduler-induced output corruption.
-// Parent waits for all children to complete before exiting.
+// user/sched_test.zig - Demo of preemptive scheduling across forked processes; uses atomic printing
 
 const sys = @import("syscall");
 const io = @import("io");
@@ -78,10 +75,7 @@ fn run_worker_common(name: []const u8) void {
         io.atomic_print_int(tick);
         io.atomic_println();
 
-        // Burn through a scheduling quantum so the timer preempts us
-        // and switches to another worker.
-
-        busy_wait();
+        busy_wait(); // burns a scheduling quantum to trigger preemption
 
     }
 

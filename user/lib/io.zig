@@ -111,8 +111,7 @@ pub fn read_line(buf: []u8) []u8 {
 
 }
 
-// Atomic printing: buffers output and writes atomically (single syscall).
-// Prevents scheduler-induced interleaving of output from multiple processes/threads.
+// Atomic printing: buffers output and flushes as a single syscall to prevent scheduler-induced interleaving
 
 var atomic_buffer: [512]u8 = undefined;
 var atomic_pos: usize = 0;

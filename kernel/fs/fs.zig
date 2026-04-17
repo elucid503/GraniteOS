@@ -1,4 +1,4 @@
-// kernel/fs/fs.zig - GraniteOS in-memory hierarchical file system
+// kernel/fs/fs.zig - GraniteOS file system
 
 const heap = @import("../memory/heap.zig");
 const scheduler = @import("../scheduler/scheduler.zig");
@@ -7,24 +7,29 @@ const sync = @import("../sync/mutex.zig");
 const persist = @import("persist.zig");
 const index = @import("index.zig");
 
-/// Protects all file and pipe table mutations.
+// Global mutex for synchronizing access across multiple cores
+
 var fs_lock: sync.Mutex = .{};
+
+// Constants for file system limits and layout
 
 pub const MAX_FILES: usize = 64;
 pub const MAX_PIPES: usize = 8;
 pub const MAX_NAME: usize = 31;
+
 pub const FILE_CAPACITY: usize = 4096;
 pub const PIPE_CAPACITY: usize = 4096;
 
 pub const FIRST_FD: usize = 3;
 
-/// Sentinel: logical root (not a slot index). Entries directly under root use this as `parent`.
-pub const ROOT_DIR: u8 = 0xFF;
+pub const ROOT_DIR: u8 = 0xFF; // A sentinel value to ensure that ROOT_DIR is distinguishable as a parent reference
 
 pub const MAX_PATH_SEGMENTS: usize = 16;
 
+/// File kinds: empty (unused), regular file, directory, or embedded program (ELF image).
 pub const FileKind = enum { empty, file, directory, program };
 
+/// File permissions: read, write, execute, delete (for regular files only). No group/other distinction for simplicity.
 pub const Permissions = struct {
 
     can_read: bool = true,
@@ -34,13 +39,13 @@ pub const Permissions = struct {
 
 };
 
+/// File system entry: represents a regular file, directory, or embedded program. Indexed by inode number (0..MAX_FILES-1).
 pub const FileEntry = struct {
 
     name: [MAX_NAME + 1]u8 = undefined,
     name_len: u8 = 0,
 
-    /// Parent directory: inode index of parent, or `ROOT_DIR` for root-level entries.
-    parent: u8 = ROOT_DIR,
+    parent: u8 = ROOT_DIR, // Parent can be ROOT_DIR or an index of a directory entry (0..MAX_FILES-1)
 
     kind: FileKind = .empty,
 
@@ -51,13 +56,13 @@ pub const FileEntry = struct {
 
     data: ?[*]u8 = null,
 
-    /// When `kind == .program`, index into `embedded.programs` (ELF image).
-    program_index: u8 = 0,
+    program_index: u8 = 0, // When kind == .program, it is indexed into embedded.programs for the ELF bytes
 
     permissions: Permissions = .{},
 
 };
 
+/// In-memory pipe struct. Indexed by pipe index (0..MAX_PIPES-1) when active.
 pub const Pipe = struct {
 
     buffer: [PIPE_CAPACITY]u8 = undefined,
@@ -74,6 +79,7 @@ pub const Pipe = struct {
 
 };
 
+/// Result of a pipe read operation: number of bytes read, or whether the caller should block waiting for data.
 pub const ReadResult = struct {
 
     bytes: usize = 0,
@@ -81,6 +87,7 @@ pub const ReadResult = struct {
 
 };
 
+/// File descriptor pair for a newly created pipe: read_fd and write_fd, with both sides set up in the caller's PCB.
 pub const PipeFds = struct {
 
     read_fd: usize,
@@ -88,23 +95,26 @@ pub const PipeFds = struct {
 
 };
 
+// FS State
+
 pub var files: [MAX_FILES]FileEntry = undefined;
 pub var pipes: [MAX_PIPES]Pipe = undefined;
 
-// Binary search path: directories searched when resolving bare command names.
+// Searching state
 
 pub const MAX_PATH_ENTRIES: usize = 16;
 pub const MAX_PATH_LEN: usize = 64;
 
 pub const PathEntry = struct {
 
-    path: [MAX_PATH_LEN]u8 = undefined,
     len: usize = 0,
+
+    path: [MAX_PATH_LEN]u8 = undefined,
     active: bool = false,
 
 };
 
-pub var search_path: [MAX_PATH_ENTRIES]PathEntry = [_]PathEntry{.{}} ** MAX_PATH_ENTRIES;
+pub var search_path: [MAX_PATH_ENTRIES]PathEntry = [_]PathEntry{.{}} ** MAX_PATH_ENTRIES; // Circular buffer, new entries overwrite oldest
 
 pub fn init() void {
 
@@ -122,14 +132,17 @@ pub fn init() void {
 
 }
 
-/// Root layout: `/programs` (embedded user ELFs), `/config`, `/temp`, `/dev`, and `/config/motd`.
-/// Called during init (single-threaded) - no locking needed.
+/// Root layout: /programs, /config, /temp, /dev, and /config. Called during kernel init, runs on primary core.
 fn populate_default_layout() void {
+
+    // Ensuring default layout
 
     _ = mkdir_in_locked(ROOT_DIR, "programs", 0);
     _ = mkdir_in_locked(ROOT_DIR, "config", 0);
     _ = mkdir_in_locked(ROOT_DIR, "temp", 0);
     _ = mkdir_in_locked(ROOT_DIR, "dev", 0);
+
+    // 'Installing' programs
 
     const prog_dir: u8 = @intCast(find_child_any(ROOT_DIR, "programs") orelse return);
 
@@ -139,6 +152,8 @@ fn populate_default_layout() void {
         _ = install_program_under(prog_dir, prog.name, @intCast(i), prog.elf.len);
 
     }
+
+    // Creating a default 'motd' file
 
     const cfg_idx: u8 = @intCast(find_child_any(ROOT_DIR, "config") orelse return);
 
@@ -166,24 +181,33 @@ fn populate_default_layout() void {
 fn install_program_under(parent: u8, name: []const u8, program_index: u8, elf_len: usize) bool {
 
     if (name.len == 0 or name.len > MAX_NAME) return false;
-    if (!is_valid_parent(parent)) return false;
-    if (find_child_any(parent, name) != null) return false;
+
+    if (!is_valid_parent(parent)) return false; // must be ROOT_DIR or a directory index
+    if (find_child_any(parent, name) != null) return false; // name must not already exist under parent, obviously
+
+    // Setting up the FileEntry
 
     for (&files) |*f| {
 
-        if (f.kind != .empty) continue;
+        if (f.kind != .empty) continue; // Looks for an empty slot to install the program
 
         f.kind = .program;
+
         f.parent = parent;
         f.owner = 0;
-        f.size = elf_len;
+
         f.capacity = 0;
+        f.size = elf_len;
+
         f.data = null;
+
         f.program_index = program_index;
         f.name_len = @intCast(name.len);
+
         f.permissions = .{ .can_read = true, .can_exec = true };
 
         @memcpy(f.name[0..name.len], name);
+
         f.name[name.len] = 0;
 
         return true;
@@ -194,7 +218,7 @@ fn install_program_under(parent: u8, name: []const u8, program_index: u8, elf_le
 
 }
 
-/// If `path` resolves to an embedded program inode, return its ELF bytes.
+/// If path resolves to an embedded program inode, returns its ELF bytes.
 pub fn resolve_program_elf_from_path(cwd: u8, path: []const u8) ?[]const u8 {
 
     fs_lock.lock();
@@ -637,8 +661,7 @@ pub fn delete_file_path(cwd: u8, path: []const u8) isize {
 
 }
 
-/// Remove a directory and everything beneath it (recursive). Only the owner may remove.
-/// `working_dir` is the process cwd inode: cannot remove that directory or any ancestor of cwd.
+/// Remove a directory and all its descendants. Fails if cwd is inside the target tree.
 pub fn rmdir_path(cwd: u8, path: []const u8, caller_pid: u32, working_dir: u8) isize {
 
     fs_lock.lock();
@@ -774,9 +797,7 @@ pub fn rename_path(cwd: u8, old_path: []const u8, new_path: []const u8, caller_p
 
 }
 
-/// Write directory listing for `dir_ref` (`ROOT_DIR` or a directory inode) into buf.
-/// Each entry: name\0'f'|'d'\0size_decimal\0perms_decimal\0inode_decimal\0owner_decimal\0capacity_decimal\0
-/// perms_decimal encodes Permissions as bitmask: bit0=read bit1=write bit2=exec bit3=delete
+/// Writes the directory listing for dir_ref into buf. Each entry is 7 NUL-terminated fields: name, kind (f/d), size, perms bitmask, inode, owner, capacity.
 pub fn list_dir(buf: [*]u8, size: usize, dir_ref: u8) usize {
 
     fs_lock.lock();
@@ -1234,9 +1255,7 @@ pub fn is_executable(slot: usize) bool {
 
 }
 
-/// Search the filesystem recursively for files matching a query.
-/// mode 0 = name substring match, mode 1 = content substring match.
-/// Writes results as null-separated absolute paths into buf.
+/// Searches the filesystem for files matching query. mode 0 = name substring, mode 1 = content substring. Writes null-separated absolute paths into buf.
 pub fn search(start_dir: u8, query: []const u8, mode: u8, buf: [*]u8, buf_size: usize) usize {
 
     fs_lock.lock();

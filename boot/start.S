@@ -1,8 +1,6 @@
 // boot/start.S - ARM64 bootloader: SMP boot, EL2->EL1 drop, BSS zero, jump to kmain
-//
-// Core 0: full init (BSS zero, page tables, MMU, kmain).
-// Cores 1-3: wait on a mailbox, then jump to the secondary entry point
-// written by core 0 after kernel init completes.
+
+// Core 0: full init (set BSS data to zero, init page tables, set up MMU, jump to kmain)
 
 .section ".text.boot"
 .global _start
@@ -15,9 +13,8 @@ _start:
     and     x0, x0, #0xFF
 
     // Cores 1-3 go to the secondary entry (dead path with PSCI, kept for safety)
-    cbnz    x0, secondary_entry
 
-    // ---- Core 0 only from here ----
+    cbnz    x0, secondary_entry
 
     // Drop from EL2 to EL1 if needed; skip if already at EL1
 
@@ -82,18 +79,16 @@ _start:
     msr     vbar_el1, x0
     isb
 
-    // Configure memory attributes:
-    //   Attr0 = 0xFF = Normal memory (inner+outer write-back, read/write allocate)
-    //   Attr1 = 0x00 = Device-nGnRnE (strongly ordered, no reordering or speculation)
+    // Attr0 = 0xFF = Normal memory (inner+outer write-back, read/write allocate)
+    // Attr1 = 0x00 = Device-nGnRnE (strongly ordered, no reordering or speculation)
 
     mov     x0, #0xff
     msr     mair_el1, x0
 
-    // Configure translation control:
-    //   T0SZ=16, T1SZ=16 - 48-bit VA space
-    //   4KB granule (TG0=0b00, TG1=0b10), inner-shareable WB caches
-    //   IPS=0b001 (36-bit physical address)
-    //   EPD1=1 - disable TTBR1 walks; high-half faults until kernel migrates
+    // T0SZ=16, T1SZ=16 - 48-bit VA space
+    // 4KB granule (TG0=0b00, TG1=0b10), inner-shareable WB caches
+    // IPS=0b001 (36-bit physical address)
+    // EPD1=1 - disable TTBR1 walks; high-half faults until kernel migrates
 
     ldr     x0, =0x1B5183510
     msr     tcr_el1, x0
@@ -107,12 +102,12 @@ _start:
 
     ldr     x0, =boot_l0_table
     ldr     x1, =boot_l1_table
-    orr     x1, x1, #0x3           // table descriptor: valid=1, type=table
+    orr     x1, x1, #0x3 // table descriptor: valid=1, type=table
     str     x1, [x0]
 
     // L1[0] = 1GB device-memory block at PA 0x0
-    //   Covers UART (0x09000000), GIC (0x08000000), and all MMIO below 1GB
-    //   PXN=1, UXN=1, AF=1, SH=non-shareable, AttrIdx=1 (device), block
+    // Covers UART (0x09000000), GIC (0x08000000), and all MMIO below 1GB
+    // PXN=1, UXN=1, AF=1, SH=non-shareable, AttrIdx=1 (device), block
 
     ldr     x0, =boot_l1_table
     ldr     x1, =0x0060000000000405
@@ -121,19 +116,11 @@ _start:
     // L1[1] -> L2 table (splits 0x40000000-0x7FFFFFFF at 2MB granularity)
 
     ldr     x1, =boot_l2_table
-    orr     x1, x1, #0x3           // table descriptor
+    orr     x1, x1, #0x3 // table descriptor
     str     x1, [x0, #8]
 
     // Fill boot_l2_table.
     // Each entry covers 2MB; 512 entries cover the full 1GB (0x40000000-0x7FFFFFFF).
-    //
-    // L2[0..7]   (0x40000000-0x40FFFFFF, 16MB) - kernel memory
-    //   UXN=1 (EL0 no execute), PXN=0 (EL1 execute OK), AP=00 (EL1 data only)
-    //   attr bits: 0x0040000000000701  (UXN=bit54, AP=00, AF, SH=inner, AttrIdx=0, block)
-    //
-    // L2[8..511] (0x41000000-0x7FFFFFFF) - user memory
-    //   UXN=0 (EL0 execute OK), PXN=1 (EL1 no execute), AP=01 (EL0+EL1 R/W)
-    //   attr bits: 0x0020000000000741  (PXN=bit53, AP=01, AF, SH=inner, AttrIdx=0, block)
 
     ldr     x0, =boot_l2_table
     mov     x1, #0x40000000         // current PA (2MB-aligned, advances in loop)
@@ -148,7 +135,7 @@ _start:
 
     orr     x5, x1, x2
     str     x5, [x0, x3, lsl #3]
-    add     x1, x1, #0x200000       // PA += 2MB
+    add     x1, x1, #0x200000 // PA += 2MB
     add     x3, x3, #1
     cmp     x3, x4
     b.lt    .Lkernel_l2_loop
@@ -163,7 +150,7 @@ _start:
 
     orr     x5, x1, x2
     str     x5, [x0, x3, lsl #3]
-    add     x1, x1, #0x200000       // PA += 2MB
+    add     x1, x1, #0x200000 // PA += 2MB
     add     x3, x3, #1
     cmp     x3, x4
     b.lt    .Luser_l2_loop
@@ -182,20 +169,19 @@ _start:
     // Enable MMU (M=1), data cache (C=1), and instruction cache (I=1)
 
     mrs     x0, sctlr_el1
-    orr     x0, x0, #(1 << 0)      // M: enable MMU
-    orr     x0, x0, #(1 << 2)      // C: enable data cache
-    orr     x0, x0, #(1 << 12)     // I: enable instruction cache
+    orr     x0, x0, #(1 << 0) // M: enable MMU
+    orr     x0, x0, #(1 << 2) // C: enable data cache
+    orr     x0, x0, #(1 << 12) // I: enable instruction cache
     msr     sctlr_el1, x0
-    isb                             // pipeline flush - MMU is now active
+    isb
 
     bl      kmain
 
 
-// ---- Secondary core entry (cores 1-3) ----
-// Entry point for PSCI CPU_ON. Starts at EL1 with MMU off.
-// Also handles EL2 entry for non-PSCI platforms.
+// Secondary core entry (cores 1-3)
 
 .global secondary_entry
+
 secondary_entry:
 
     // Read core ID from MPIDR_EL1.Aff0
@@ -203,7 +189,7 @@ secondary_entry:
     mrs     x19, mpidr_el1
     and     x19, x19, #0xFF
 
-    // Drop from EL2 to EL1 if needed (PSCI starts at EL1; handle both cases)
+    // Drop from EL2 to EL1 if needed (PSCI should start at EL1; we handle both cases)
 
     mrs     x0, CurrentEL
     lsr     x0, x0, #2
@@ -227,8 +213,7 @@ secondary_entry:
 
 .Lsec_el1:
 
-    // Set SCTLR_EL1 to a known-good state (MMU off, caches off).
-    // Needed for the PSCI path which skips the EL2 drop.
+    // Sets SCTLR_EL1 to a known-good state (MMU off, caches off).
 
     mov     x0, #0x0800
     movk    x0, #0x30d0, lsl #16
@@ -275,6 +260,7 @@ secondary_entry:
     beq     .Lstack2
 
     // Core 3 (or any other)
+
     ldr     x0, =__core3_stack_top
     b       .Lstack_set
 
@@ -295,22 +281,21 @@ secondary_entry:
     b       kmain_secondary
 
 
-// ---- Data ----
+// Data
 
-// Boot page tables - placed in BSS so the zero-loop clears them before use.
-// Alignment requirements: 4KB for all levels (TTBR and descriptor pointers).
-// Exported so page_table.zig can reference them to seed per-process tables.
-
-.balign 4096
+.balign 4096 // 4KB-aligned page tables
 
 .global boot_l0_table
+
 boot_l0_table:
     .space 4096
 
 .global boot_l1_table
+
 boot_l1_table:
     .space 4096
 
 .global boot_l2_table
+
 boot_l2_table:
-    .space 4096      // 512 x 8-byte entries = 4096 bytes
+    .space 4096 // 512 x 8-byte entries = 4096 bytes

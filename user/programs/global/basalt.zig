@@ -7,8 +7,7 @@ const MAX_LINE: usize = 256;
 const MAX_PIPE_STAGES: usize = 8;
 const MAX_ARGS: usize = 16;
 
-// Command history: doubly-linked list with max 25 entries stored in a fixed array.
-// prev -> toward newer (head), next -> toward older (tail).
+// Command history: doubly-linked list (max 25) stored in a fixed array; prev = newer, next = older.
 
 const HISTORY_MAX: usize = 25;
 const NONE: usize = HISTORY_MAX; // sentinel for null index
@@ -28,8 +27,6 @@ var h_head: usize = NONE;
 var h_tail: usize = NONE;
 var h_count: usize = 0;
 
-/// Push a command onto the front of the history list.
-/// Evicts the oldest entry when full. Skips duplicate of the most recent entry.
 fn history_push(cmd: []const u8) void {
 
     if (cmd.len == 0) return;

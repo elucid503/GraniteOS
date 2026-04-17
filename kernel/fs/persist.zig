@@ -1,14 +1,4 @@
-// kernel/fs/persist.zig - Persistent filesystem layer
-//
-// On-disk format (simple flat layout):
-//   Sector 0:       Superblock (magic, version, file count)
-//   Sectors 1-64:   File entry headers (one per slot, 512 bytes each)
-//   Sectors 65+:    File data (each file gets 8 sectors = 4KB at a fixed offset)
-//
-// Programs (kind=.program) are never persisted - they live in the kernel image.
-// On load, persistent user files/dirs overlay the default FS layout.
-// On mutation (create, write, delete, rename, chmod, mkdir, rmdir), the
-// affected entry is flushed to disk.
+// kernel/fs/persist.zig - Persistent FS: superblock at sector 0, one entry header per slot (sectors 1-64), file data at sectors 65+ (8 sectors / 4KB per file)
 
 const fs = @import("fs.zig");
 const extio = @import("../drivers/extio.zig");
@@ -17,19 +7,19 @@ const MAGIC: u32 = 0x474E4954; // "GNIT" (GraNITe)
 const VERSION: u32 = 1;
 
 const HEADER_SECTOR: u64 = 0;
-const ENTRY_SECTOR_BASE: u64 = 1; // sectors 1..64
-const DATA_SECTOR_BASE: u64 = 65; // each file: 8 sectors (4KB)
+const ENTRY_SECTOR_BASE: u64 = 1;
+const DATA_SECTOR_BASE: u64 = 65;
 const SECTORS_PER_FILE: u64 = 8;
 
 const SECTOR_SIZE: usize = 512;
 
-// On-disk file entry header (512 bytes)
+// On-disk file entry header (512 bytes, packed to fit one sector)
 const DiskEntry = extern struct {
 
     name: [fs.MAX_NAME + 1]u8,
     name_len: u8,
     parent: u8,
-    kind: u8, // 0=empty, 1=file, 2=directory, 3=program(skip)
+    kind: u8, // 0=empty, 1=file, 2=directory, 3=program (skipped on load)
     owner_lo: u16,
     owner_hi: u16,
     size_lo: u16,
@@ -44,12 +34,11 @@ const KIND_FILE: u8 = 1;
 const KIND_DIR: u8 = 2;
 const KIND_PROGRAM: u8 = 3;
 
-/// Try to load the persistent FS from disk. Returns true if a valid superblock was found.
+/// Loads the persistent FS from disk. Returns true if a valid superblock was found.
 pub fn load() bool {
 
     if (!extio.is_available()) return false;
 
-    // Read superblock
     var sb_buf: [SECTOR_SIZE]u8 align(16) = undefined;
 
     if (!extio.read_sector(HEADER_SECTOR, &sb_buf)) return false;
@@ -58,8 +47,6 @@ pub fn load() bool {
     const version = read_u32(&sb_buf, 4);
 
     if (magic != MAGIC or version != VERSION) return false;
-
-    // Load each file entry
 
     var sector_buf: [SECTOR_SIZE]u8 align(16) = undefined;
 
@@ -72,10 +59,6 @@ pub fn load() bool {
         if (disk.kind == KIND_EMPTY or disk.kind == KIND_PROGRAM) continue;
 
         const entry = &fs.files[i];
-
-        // Skip entries that already exist (e.g., default directories created by init)
-        // Only overwrite if the slot is occupied by a default entry OR empty.
-        // We always apply the persisted state since it represents user intent.
 
         entry.name = disk.name;
         entry.name_len = disk.name_len;
@@ -104,7 +87,6 @@ pub fn load() bool {
 
             entry.kind = .file;
 
-            // Allocate data buffer if needed
             if (entry.data == null) {
 
                 const heap = @import("../memory/heap.zig");
@@ -115,7 +97,6 @@ pub fn load() bool {
 
             entry.size = @min(size, entry.capacity);
 
-            // Read file data from disk
             if (entry.data) |data| {
 
                 var data_buf: [SECTOR_SIZE]u8 align(16) = undefined;
@@ -147,12 +128,11 @@ pub fn load() bool {
 
 }
 
-/// Write the entire FS state to disk (superblock + all entries + data).
+/// Writes the superblock and all file entries to disk.
 pub fn save_all() void {
 
     if (!extio.is_available()) return;
 
-    // Write superblock
     var sb_buf: [SECTOR_SIZE]u8 align(16) = [_]u8{0} ** SECTOR_SIZE;
 
     write_u32(&sb_buf, 0, MAGIC);
@@ -161,7 +141,6 @@ pub fn save_all() void {
 
     _ = extio.write_sector(HEADER_SECTOR, &sb_buf);
 
-    // Write all entries
     for (0..fs.MAX_FILES) |i| {
 
         save_entry(i);
@@ -170,7 +149,7 @@ pub fn save_all() void {
 
 }
 
-/// Write a single file entry and its data to disk.
+/// Writes a single file entry and its data to disk.
 pub fn save_entry(index: usize) void {
 
     if (!extio.is_available()) return;
@@ -205,7 +184,6 @@ pub fn save_entry(index: usize) void {
 
     _ = extio.write_sector(ENTRY_SECTOR_BASE + @as(u64, @intCast(index)), &buf);
 
-    // Write file data if this is a regular file with content
     if (entry.kind == .file and entry.size > 0) {
 
         if (entry.data) |data| {
@@ -234,8 +212,7 @@ pub fn save_entry(index: usize) void {
 
 }
 
-/// Wipe the disk: zero the superblock and all entry sectors.
-/// On next boot, the magic check fails and the FS initialises fresh from defaults.
+/// Zeroes the superblock and all entry sectors. On next boot, the magic check fails and the FS starts fresh.
 pub fn format() void {
 
     if (!extio.is_available()) return;

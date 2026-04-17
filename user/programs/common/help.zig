@@ -1,4 +1,4 @@
-// user/help.zig - List available programs on GraniteOS
+// user/help.zig - Lists available programs by category
 
 const sys = @import("syscall");
 const io = @import("io");
@@ -16,8 +16,7 @@ export fn _start() noreturn {
 
     }
 
-    // Entries are category, name, description, with all being null-terminated. Categories are repeated for each entry, but we only print when it changes.
-
+    // Each entry: category\0 name\0 description\0. Category is repeated per entry; we print it only when it changes.
     var pos: usize = 0;
     var current_cat: [32]u8 = undefined;
     var current_cat_len: usize = 0;
@@ -25,34 +24,22 @@ export fn _start() noreturn {
 
     while (pos < total) {
 
-        // Read category.
-
         const cat_start = pos;
-
         while (pos < total and buf[pos] != 0) pos += 1;
         const category = buf[cat_start..pos];
-
-        pos += 1; // skip null
-
-        // Read name.
+        pos += 1;
 
         const name_start = pos;
         while (pos < total and buf[pos] != 0) pos += 1;
         const name = buf[name_start..pos];
-
-        pos += 1; // skip null
-
-        // Read description.
+        pos += 1;
 
         const desc_start = pos;
         while (pos < total and buf[pos] != 0) pos += 1;
         const desc = buf[desc_start..pos];
-
-        pos += 1; // skip null
+        pos += 1;
 
         if (name.len == 0) continue;
-
-        // Check if category changed.
 
         if (category.len != current_cat_len or !eqslice(category, current_cat[0..current_cat_len])) {
 
@@ -66,17 +53,13 @@ export fn _start() noreturn {
 
         }
 
-        // Print with column alignment: name padded to 12 chars.
-
         io.print("  ");
         io.print(name);
 
         var padding: usize = 0;
 
         while (padding + name.len < 12) : (padding += 1) {
-
-            io.print(" "); // pad with spaces
-
+            io.print(" ");
         }
 
         io.print("  ");

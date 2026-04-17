@@ -1,13 +1,11 @@
-// user/programs/fs/edit.zig — Interactive text editor with nano-like TUI; pipe-in mode when stdin is redirected.
+// user/programs/fs/edit.zig - Interactive TUI text editor; reads from stdin when piped
 
 const sys = @import("syscall");
 const io = @import("io");
 
-// Terminal layout (assumes 80x24 VT100-compatible terminal).
-
-const TERM_ROWS: usize = 24;
-const CONTENT_ROWS: usize = TERM_ROWS - 4; // header (2) + footer (2) = 20 content rows
-const FILE_MAX: usize = 4095;              // max editable bytes (one byte reserved for safety)
+const TERM_ROWS: usize = 24; // assumes 80x24 VT100-compatible terminal
+const CONTENT_ROWS: usize = TERM_ROWS - 4; // header (2) + footer (2)
+const FILE_MAX: usize = 4095; // one byte reserved for safety
 
 var content: [FILE_MAX + 1]u8 = undefined;
 var content_len: usize = 0;
@@ -26,8 +24,6 @@ export fn _start(argc: usize, argv: [*]const ?[*:0]const u8) noreturn {
     const file_name_z = argv[1].?;
 
     if (!sys.isatty(sys.STDIN)) {
-
-        // Piped mode: read from stdin and write directly to the file.
 
         const fd = sys.open(file_name_z, sys.OPEN_READWRITE);
 
@@ -61,10 +57,7 @@ export fn _start(argc: usize, argv: [*]const ?[*:0]const u8) noreturn {
 
 }
 
-// Interactive TUI: load file, edit, save on Alt+S, exit on Alt+C.
 fn run_tui(filename: []const u8, file_name_z: [*:0]const u8) void {
-
-    // Load existing file content.
 
     content_len = 0;
     cursor_pos = 0;
@@ -87,24 +80,18 @@ fn run_tui(filename: []const u8, file_name_z: [*:0]const u8) void {
 
         const c = io.read_char();
 
-        // ESC: Alt shortcuts or arrow keys.
-
         if (c == 0x1B) {
 
             const c2 = io.read_char();
 
-            // Alt+C: exit without saving.
-
-            if (c2 == 'c') {
+            if (c2 == 'c') { // Alt+C: exit without saving
 
                 io.print("\x1B[2J\x1B[H");
                 return;
 
             }
 
-            // Alt+S: save and exit.
-
-            if (c2 == 's') {
+            if (c2 == 's') { // Alt+S: save and exit
 
                 save(file_name_z);
                 io.print("\x1B[2J\x1B[H");
@@ -112,9 +99,7 @@ fn run_tui(filename: []const u8, file_name_z: [*:0]const u8) void {
 
             }
 
-            // Arrow keys via CSI (ESC [ X) or SS3 (ESC O X).
-
-            if (c2 == '[' or c2 == 'O') {
+            if (c2 == '[' or c2 == 'O') { // arrow keys via CSI or SS3
 
                 switch (io.read_char()) {
                     'A' => move_up(),

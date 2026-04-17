@@ -5,8 +5,7 @@ const io = @import("io");
 
 export fn _start() noreturn {
 
-    io.print("\x1b[2J"); // Clear entire screen
-    io.print("\x1b[H");  // Move cursor to top-left
+    io.print("\x1b[2J\x1b[H"); // clear screen and move cursor to top-left
 
     sys.exit(0);
 

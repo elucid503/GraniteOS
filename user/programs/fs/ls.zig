@@ -1,9 +1,4 @@
-// user/fs/ls.zig - List files in the virtual file system
-//
-// Flags (may be combined):
-//   -perms    show file permissions alongside each entry
-//   -compact  single-line output: all entries on one row
-//   -debug    dump all available metadata per entry
+// user/fs/ls.zig - Lists files in the virtual file system. Flags: -perms, -compact, -debug
 
 const sys = @import("syscall");
 const io = @import("io");
@@ -48,11 +43,7 @@ export fn _start(argc: usize, argv: [*]const ?[*:0]const u8) noreturn {
 
     }
 
-    // Entry layout (7 NUL-terminated fields per entry):
-    //   name\0  kind\0  size\0  perms\0  inode\0  owner\0  capacity\0
-    //
-    // perms is a decimal bitmask: bit0=read bit1=write bit2=exec bit3=delete
-
+    // Entry layout: name\0 kind\0 size\0 perms_bitmask\0 inode\0 owner\0 capacity\0
     var pos: usize = 0;
     var count: usize = 0;
 
@@ -109,7 +100,6 @@ export fn _start(argc: usize, argv: [*]const ?[*:0]const u8) noreturn {
 
         } else if (debug) {
 
-            // Decode permissions bitmask.
             const pmask = parse_uint(perms_str);
 
             io.print("  ");
@@ -152,7 +142,6 @@ export fn _start(argc: usize, argv: [*]const ?[*:0]const u8) noreturn {
 
         } else {
 
-            // Default layout (unchanged).
             io.print("  ");
             io.print(name);
             pad_to(name.len, 22);

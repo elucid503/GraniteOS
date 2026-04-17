@@ -1,6 +1,4 @@
-// kernel/memory/heap.zig - Kernel bump allocator backed by physical pages
-//
-// Thread-safe: protected by a mutex for SMP.
+// kernel/memory/heap.zig - Kernel bump allocator backed by physical pages (mutex-protected for SMP)
 
 const physical_allocator = @import("physical_allocator.zig");
 const sync = @import("../sync/mutex.zig");
@@ -9,13 +7,11 @@ const PAGE_SIZE: usize = 4096;
 
 var bump_ptr: usize = 0;
 var heap_end: usize = 0;
-
 var heap_start: usize = 0;
 
 var heap_lock: sync.Mutex = .{};
 
-/// Carve out num_pages contiguous physical pages and use them as the initial heap.
-/// The bitmap allocator always returns the lowest free page first, so sequential calls produce contiguous pages.
+/// Allocates num_pages contiguous physical pages as the initial heap region.
 pub fn init(num_pages: usize) void {
 
     var i: usize = 0;
@@ -37,7 +33,7 @@ pub fn init(num_pages: usize) void {
 
 }
 
-/// Allocate size bytes aligned to alignment. Returns null when the heap is exhausted.
+/// Allocates size bytes aligned to alignment. Returns null when the heap is exhausted.
 pub fn alloc(size: usize, alignment: usize) ?[*]u8 {
 
     heap_lock.lock();
@@ -52,14 +48,14 @@ pub fn alloc(size: usize, alignment: usize) ?[*]u8 {
 
 }
 
-/// Return the number of bytes currently allocated from the heap.
+/// Returns the number of bytes currently allocated from the heap.
 pub fn used_bytes() usize {
 
     return bump_ptr - heap_start;
 
 }
 
-/// Return the total heap capacity in bytes.
+/// Returns the total heap capacity in bytes.
 pub fn capacity() usize {
 
     return heap_end - heap_start;

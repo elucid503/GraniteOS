@@ -5,9 +5,7 @@ const io = @import("io");
 
 var signal_received: usize = 0;
 
-// Signal handler for 'interrupt' (signal 1).
-// Must call sigreturn() to resume normal execution.
-fn handle_interrupt(_: usize) callconv(.c) noreturn {
+fn handle_interrupt(_: usize) callconv(.c) noreturn { // signal 1 handler; sigreturn() resumes caller
 
     signal_received = 1;
     sys.sigreturn();
@@ -20,8 +18,7 @@ export fn _start() noreturn {
 
     const pid = sys.getpid();
 
-    // 1. Register a handler for 'interrupt' and send it to ourselves.
-    // The handler sets a flag and calls sigreturn, resuming right after kill().
+    // Registers a handler for 'interrupt' (signal 1) and sends it to self.
 
     _ = sys.sigaction(1, @intFromPtr(&handle_interrupt));
 
@@ -46,7 +43,7 @@ export fn _start() noreturn {
 
     }
 
-    // 2. Fork a child and terminate it with the default 'terminate' signal.
+    // Forks a child and terminates it with signal 0 (terminate).
 
     const child = sys.fork();
 

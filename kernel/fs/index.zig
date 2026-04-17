@@ -1,9 +1,4 @@
-// kernel/fs/index.zig — Flat sorted index for fast filesystem lookups
-//
-// Maintains a sorted array of (name_hash, slot) pairs across the entire
-// directory hierarchy. Marked dirty on any FS mutation; rebuilt lazily
-// on the next lookup. Binary search gives O(log n) exact-name lookups
-// without walking the directory tree.
+// kernel/fs/index.zig - Sorted (name_hash, slot) index for O(log n) FS lookups; rebuilt lazily on mutation
 
 const fs = @import("fs.zig");
 
@@ -18,14 +13,14 @@ var entries: [fs.MAX_FILES]IndexEntry = undefined;
 var count: usize = 0;
 var dirty: bool = true;
 
-/// Mark the index as stale. Called after any FS mutation.
+/// Marks the index as stale. Called after any FS mutation.
 pub fn invalidate() void {
 
     dirty = true;
 
 }
 
-/// Rebuild the index from the current file table if stale.
+/// Rebuilds the index from the current file table if stale.
 pub fn rebuild() void {
 
     if (!dirty) return;
@@ -47,7 +42,7 @@ pub fn rebuild() void {
 
     }
 
-    // Insertion sort (n <= 64, fast enough)
+    // Insertion sort (n <= 64, fast enough in practice)
     var i: usize = 1;
 
     while (i < count) : (i += 1) {
@@ -70,8 +65,7 @@ pub fn rebuild() void {
 
 }
 
-/// Find all file slots whose name exactly matches `name`.
-/// Returns matching slot indices via the callback buffer (max 8 results).
+/// Finds all slots whose name exactly matches name. Returns match count (max 8).
 pub fn lookup_exact(name: []const u8, results: *[8]u8) usize {
 
     rebuild();
@@ -79,7 +73,6 @@ pub fn lookup_exact(name: []const u8, results: *[8]u8) usize {
     const target = fnv1a(name);
     var found: usize = 0;
 
-    // Binary search to first candidate
     var lo: usize = 0;
     var hi: usize = count;
 
@@ -95,7 +88,7 @@ pub fn lookup_exact(name: []const u8, results: *[8]u8) usize {
 
     }
 
-    // Scan all entries with matching hash (collisions possible)
+    // Scan past hash collisions with a name equality check
     while (lo < count and entries[lo].hash == target and found < 8) {
 
         const slot = entries[lo].slot;
@@ -116,7 +109,6 @@ pub fn lookup_exact(name: []const u8, results: *[8]u8) usize {
 
 }
 
-/// FNV-1a hash for short strings.
 fn fnv1a(data: []const u8) u32 {
 
     var h: u32 = 0x811c9dc5;

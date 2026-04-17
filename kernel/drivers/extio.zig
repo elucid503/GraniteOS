@@ -1,19 +1,17 @@
-// kernel/drivers/extio.zig - Minimal virtio-mmio block device driver (polling)
-//
-// Scans QEMU virt's virtio-mmio transports at 0x0a000000 for a block device.
-// Uses a single virtqueue with polling (no interrupts) for simple read/write.
-// Supports both legacy (v1) and modern (v2) transports.
+// kernel/drivers/extio.zig - Minimal virtio-mmio block device driver for QEMU
 
 const sync = @import("../sync/mutex.zig");
 
 const SECTOR_SIZE: usize = 512;
 
-// QEMU virt machine: 32 virtio-mmio transports at 0x0a000000, stride 0x200
+// QEMU virt machine has 32 virtio-mmio transports at 0x0a000000, stride of 0x200
+
 const VIRTIO_MMIO_BASE: usize = 0x0a000000;
 const VIRTIO_MMIO_STRIDE: usize = 0x200;
 const VIRTIO_MMIO_COUNT: usize = 32;
 
-// virtio-mmio register offsets
+// Register offsets
+
 const REG_MAGIC: usize = 0x000;
 const REG_VERSION: usize = 0x004;
 const REG_DEVICE_ID: usize = 0x008;
@@ -31,29 +29,35 @@ const REG_INTERRUPT_STATUS: usize = 0x060;
 const REG_INTERRUPT_ACK: usize = 0x064;
 const REG_STATUS: usize = 0x070;
 
-// virtio status bits
+// Status bits
+
 const STATUS_ACKNOWLEDGE: u32 = 1;
 const STATUS_DRIVER: u32 = 2;
 const STATUS_FEATURES_OK: u32 = 8;
 const STATUS_DRIVER_OK: u32 = 4;
 
-// virtio magic
+// Magic value
+
 const VIRTIO_MAGIC: u32 = 0x74726976; // "virt"
 
 // Device ID for block device
+
 const DEVICE_BLOCK: u32 = 2;
 
 // Queue descriptor flags
+
 const VRING_DESC_F_NEXT: u16 = 1;
 const VRING_DESC_F_WRITE: u16 = 2; // device writes to this buffer
 
 // Block request types
+
 const VIRTIO_BLK_T_IN: u32 = 0; // read from device
 const VIRTIO_BLK_T_OUT: u32 = 1; // write to device
 
 const QUEUE_SIZE: usize = 16;
 
 // Virtqueue descriptor
+
 const VirtqDesc = extern struct {
 
     addr: u64,
@@ -64,6 +68,7 @@ const VirtqDesc = extern struct {
 };
 
 // Virtqueue available ring
+
 const VirtqAvail = extern struct {
 
     flags: u16,
@@ -73,6 +78,7 @@ const VirtqAvail = extern struct {
 };
 
 // Virtqueue used ring element
+
 const VirtqUsedElem = extern struct {
 
     id: u32,
@@ -81,6 +87,7 @@ const VirtqUsedElem = extern struct {
 };
 
 // Virtqueue used ring
+
 const VirtqUsed = extern struct {
 
     flags: u16,
@@ -90,6 +97,7 @@ const VirtqUsed = extern struct {
 };
 
 // Block request header (16 bytes)
+
 const VirtioBlkReq = extern struct {
 
     req_type: u32,
@@ -98,34 +106,41 @@ const VirtioBlkReq = extern struct {
 
 };
 
-// Contiguous vring memory required by the legacy (v1) PFN-based layout.
-// The device computes avail/used offsets from a single base address, so all
-// three rings must live at the correct fixed offsets within one allocation.
-const VRING_DESC_AREA = QUEUE_SIZE * @sizeOf(VirtqDesc);
-const VRING_AVAIL_AREA = @sizeOf(VirtqAvail);
-const VRING_USED_ALIGN = 4096;
+const VRING_DESC_AREA = QUEUE_SIZE * @sizeOf(VirtqDesc); // Descriptor table size
+const VRING_AVAIL_AREA = @sizeOf(VirtqAvail); // Available ring size (fixed for our queue size)
+const VRING_USED_ALIGN = 4096; // Padding to align used ring to next page boundary
 
 const VringLayout = extern struct {
 
     desc: [QUEUE_SIZE]VirtqDesc,
+
     avail: VirtqAvail,
-    _pad: [VRING_USED_ALIGN - VRING_DESC_AREA - VRING_AVAIL_AREA]u8,
     used: VirtqUsed,
 
+    _pad: [VRING_USED_ALIGN - VRING_DESC_AREA - VRING_AVAIL_AREA]u8,
+
 };
+
+// Singleton instance of virtqueue layout, aligned as required
 
 var vring: VringLayout align(4096) = undefined;
 
 // Request header and status byte
+
 var req_header: VirtioBlkReq align(16) = undefined;
 var req_status: u8 align(4) = 0;
+
+// Global state
 
 var base_addr: usize = 0;
 var device_version: u32 = 0;
 var last_used_idx: u16 = 0;
+
 var initialized: bool = false;
 
 var io_lock: sync.Mutex = .{};
+
+// Functions for read/write
 
 fn mmio_read(offset: usize) u32 {
 
@@ -174,13 +189,16 @@ pub fn init() bool {
 fn init_device() bool {
 
     // Reset device
+
     mmio_write(REG_STATUS, 0);
 
     // Acknowledge + driver
+
     mmio_write(REG_STATUS, STATUS_ACKNOWLEDGE);
     mmio_write(REG_STATUS, STATUS_ACKNOWLEDGE | STATUS_DRIVER);
 
-    // Read features, accept none (minimal driver)
+    // Read features, accept none, and confirm
+
     _ = mmio_read(REG_HOST_FEATURES);
     mmio_write(REG_GUEST_FEATURES, 0);
 
@@ -192,7 +210,8 @@ fn init_device() bool {
 
     }
 
-    // Set up queue 0
+    // Set up queue
+
     mmio_write(REG_QUEUE_SEL, 0);
 
     const max_size = mmio_read(REG_QUEUE_NUM_MAX);
@@ -202,20 +221,24 @@ fn init_device() bool {
     mmio_write(REG_QUEUE_NUM, num);
 
     // Initialize queue memory
+
     @memset(@as([*]u8, @ptrCast(&vring))[0..@sizeOf(VringLayout)], 0);
-    vring.avail.flags = 1; // VIRTQ_AVAIL_F_NO_INTERRUPT — we poll, so suppress device interrupts
+
+    vring.avail.flags = 1; // Since we poll, we can set the "no interrupt" flag to avoid unnecessary interrupts
     last_used_idx = 0;
 
     if (device_version == 1) {
 
-        // Legacy: set page size and queue PFN
+        // Legacy device support, set page size and PFN for combined queue layout
+
         mmio_write(REG_GUEST_PAGE_SIZE, 4096);
         mmio_write(REG_QUEUE_ALIGN, 4096);
         mmio_write(REG_QUEUE_PFN, @intCast(@intFromPtr(&vring) >> 12));
 
     } else {
 
-        // Modern: set individual queue addresses
+        // Modern device, set separate addresses for desc, avail, and used areas
+
         const desc_addr = @intFromPtr(&vring.desc);
         const avail_addr = @intFromPtr(&vring.avail);
         const used_addr = @intFromPtr(&vring.used);
@@ -230,10 +253,9 @@ fn init_device() bool {
 
     }
 
-    // Driver OK -- must preserve FEATURES_OK for v2+ or the device rejects requests
-    const ok_status = STATUS_ACKNOWLEDGE | STATUS_DRIVER | STATUS_DRIVER_OK |
-        if (device_version >= 2) STATUS_FEATURES_OK else 0;
-    mmio_write(REG_STATUS, ok_status);
+    // Driver OK - must preserve FEATURES_OK for v2+ or the device rejects requests
+
+    mmio_write(REG_STATUS, (STATUS_ACKNOWLEDGE | STATUS_DRIVER | STATUS_DRIVER_OK | if (device_version >= 2) STATUS_FEATURES_OK else 0));
 
     return true;
 
@@ -267,10 +289,12 @@ pub fn write_sector(sector: u64, buf: [*]const u8) bool {
 fn do_request(req_type: u32, sector: u64, buf: [*]u8) bool {
 
     // Clear any stale interrupt from a previous request
+
     const pending = mmio_read(REG_INTERRUPT_STATUS);
     if (pending != 0) mmio_write(REG_INTERRUPT_ACK, pending);
 
     // Set up the request header
+
     req_header = .{
 
         .req_type = req_type,
@@ -279,9 +303,10 @@ fn do_request(req_type: u32, sector: u64, buf: [*]u8) bool {
 
     };
 
-    req_status = 0xFF; // sentinel
+    req_status = 0xFF; // sentinel value to detect if device failed to write status
 
     // Descriptor 0: request header (device reads)
+
     vring.desc[0] = .{
 
         .addr = @intFromPtr(&req_header),
@@ -292,57 +317,65 @@ fn do_request(req_type: u32, sector: u64, buf: [*]u8) bool {
     };
 
     // Descriptor 1: data buffer
+
     vring.desc[1] = .{
 
         .addr = @intFromPtr(buf),
+
         .len = SECTOR_SIZE,
-        .flags = if (req_type == VIRTIO_BLK_T_IN)
-            (VRING_DESC_F_WRITE | VRING_DESC_F_NEXT) // device writes data
-        else
-            VRING_DESC_F_NEXT, // device reads data
         .next = 2,
+
+        .flags = if (req_type == VIRTIO_BLK_T_IN) (VRING_DESC_F_WRITE | VRING_DESC_F_NEXT) else VRING_DESC_F_NEXT,
 
     };
 
     // Descriptor 2: status byte (device writes)
+
     vring.desc[2] = .{
 
         .addr = @intFromPtr(&req_status),
+
         .len = 1,
-        .flags = VRING_DESC_F_WRITE,
         .next = 0,
+
+        .flags = VRING_DESC_F_WRITE,
 
     };
 
     // Make descriptor chain visible to device
+
     asm volatile ("dsb sy" ::: .{ .memory = true });
 
     // Add to available ring
+
     const avail_idx_ptr = @as(*volatile u16, @ptrCast(&vring.avail.idx));
     vring.avail.ring[avail_idx_ptr.* % QUEUE_SIZE] = 0;
-    asm volatile ("dsb sy" ::: .{ .memory = true });
-    avail_idx_ptr.* = avail_idx_ptr.* +% 1;
-    asm volatile ("dsb sy" ::: .{ .memory = true });
 
-    // Notify device (queue 0)
+    asm volatile ("dsb sy" ::: .{ .memory = true }); // Ensure descriptor is visible before updating idx
+    avail_idx_ptr.* = avail_idx_ptr.* +% 1; // Increment idx with wrapping semantics
+    asm volatile ("dsb sy" ::: .{ .memory = true }); // Ensure idx update is visible before notifying
+
+    // Notify device
+
     mmio_write(REG_QUEUE_NOTIFY, 0);
 
     // Poll for completion via volatile read of used.idx
+
     const used_idx_ptr = @as(*volatile u16, @ptrCast(&vring.used.idx));
     var timeout: usize = 0;
 
-    while (timeout < 1_000_000) : (timeout += 1) {
+    while (timeout < 1_000_000) : (timeout += 1) { // Timeout to avoid infinite loop if device is misbehaving
 
-        asm volatile ("dsb sy" ::: .{ .memory = true });
+        asm volatile ("dsb sy" ::: .{ .memory = true }); // Ensure we see latest used.idx value
 
         if (used_idx_ptr.* != last_used_idx) {
 
             last_used_idx = used_idx_ptr.*;
 
-            const status = mmio_read(REG_INTERRUPT_STATUS);
-            if (status != 0) mmio_write(REG_INTERRUPT_ACK, status);
+            const status = mmio_read(REG_INTERRUPT_STATUS); // Acknowledge the interrupt for this request
+            if (status != 0) mmio_write(REG_INTERRUPT_ACK, status); // Acknowledge all pending interrupts
 
-            return req_status == 0;
+            return req_status == 0; // Success if device wrote 0 to status, failure if it left the sentinel value or wrote a nonzero error code
 
         }
 

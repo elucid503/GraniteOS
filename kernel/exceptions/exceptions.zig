@@ -9,7 +9,7 @@ const signal = @import("../signal/signal.zig");
 
 comptime {
 
-    _ = syscall.handle_syscall; // Forces the syscall handler to be included in the binary
+    _ = syscall.handle_syscall; // Forces the syscall handler to be included in the binary, even if not used
 
 }
 
@@ -56,8 +56,12 @@ export fn handle_unhandled(exception_syndrome: u64, faulting_address: u64) noret
 
     if (is_page_fault) {
 
+        // Moves from system register the Fault Address Register (FAR_EL1) into the output variable
+
         const fault_addr = asm volatile ("mrs %[out], far_el1"
-            : [out] "=r" (-> u64),
+
+            : [out] "=r" (-> u64), // No inputs
+
         );
 
         print_exception("Page Fault!", exception_syndrome, fault_addr);
@@ -70,7 +74,7 @@ export fn handle_unhandled(exception_syndrome: u64, faulting_address: u64) noret
 
     while (true) {
 
-        asm volatile ("wfe");
+        asm volatile ("wfe"); // Waits for next event
 
     }
 

@@ -9,9 +9,7 @@ export fn _start() noreturn {
 
     io.println("Demo ......... Fork, Exec & Memory Isolation\r\n");
 
-    // Heap allocation demo: grows the break by one page and stamp a
-    // sentinel value that encodes the current PID so we can verify
-    // each process sees and modifies its own independent copy.
+    // Allocates one heap page and stamps a PID-encoded magic value to verify copy-on-write isolation.
 
     const heap: usize = sys.brk(0); // query current break
     _ = sys.brk(heap + 4096); // allocate one page
@@ -26,11 +24,6 @@ export fn _start() noreturn {
     io.print(", wrote magic 0x");
     io.print_hex(magic.*);
     io.println("");
-
-    // fork(): duplicates the address space.  The child gets an
-    // independent physical copy of every mapped page - including the
-    // heap page we just wrote.  Returns 0 in the child, child-PID in
-    // the parent, negative on error.
 
     const ret = sys.fork();
 
@@ -51,8 +44,7 @@ export fn _start() noreturn {
         io.print_int(cpid);
         io.println("] started");
 
-        // Overwrite the child's physical copy. The parent's page is
-        // a separate physical page so the parent will NOT see this.
+        // Overwrites the child's copy; parent's physical page is separate.
 
         magic.* = 0xCAFE_BABE_0000_0000 | @as(u64, cpid);
 
@@ -62,9 +54,7 @@ export fn _start() noreturn {
         io.print_hex(magic.*);
         io.println(" (isolated from parent's view)");
 
-        // exec: replace this child's image with 'hello'
-        // execve frees the current address space, loads the named ELF,
-        // and returns to EL0 at the new entry point. The PID is kept.
+        // Replaces this child's image with 'hello'; PID is preserved.
 
         io.print("[Child - PID ");
         io.print_int(cpid);
@@ -88,8 +78,7 @@ export fn _start() noreturn {
         io.print_int(child_pid);
         io.println("");
 
-        // The parent's heap page was not touched by the child: its
-        // physical page is separate after the copy-on-write fork.
+        // Parent's page is unmodified; each process has its own physical copy.
 
         io.print("[Parent - PID ");
         io.print_int(my_pid);

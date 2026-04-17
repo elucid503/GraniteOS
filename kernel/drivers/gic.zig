@@ -3,12 +3,14 @@
 const distributor_control = @as(*volatile u32, @ptrFromInt(0x0800_0000 + 0x000));
 const distributor_set_enable = @as(*volatile u32, @ptrFromInt(0x0800_0000 + 0x100));
 
+// Constants used for interrupt ID 30 (physical timer)
+
 const cpu_interface_control = @as(*volatile u32, @ptrFromInt(0x0801_0000 + 0x000));
 const cpu_priority_mask = @as(*volatile u32, @ptrFromInt(0x0801_0000 + 0x004));
 const cpu_interrupt_ack = @as(*volatile u32, @ptrFromInt(0x0801_0000 + 0x00C));
 const cpu_end_of_interrupt = @as(*volatile u32, @ptrFromInt(0x0801_0000 + 0x010));
 
-/// Full GIC init (core 0 only): distributor + CPU interface.
+/// Full GIC init: distributor + CPU interface. Runs on the primary core.
 pub fn init() void {
 
     distributor_control.* = 1;
@@ -19,11 +21,10 @@ pub fn init() void {
 }
 
 /// Per-CPU interface init for secondary cores.
-/// The distributor is shared and already configured by core 0.
-/// Each core's CPU interface registers are banked (same address, per-core state).
 pub fn init_secondary() void {
 
     distributor_set_enable.* = 1 << 30; // PPI 30 enable is banked per-core
+
     cpu_priority_mask.* = 0xFF;
     cpu_interface_control.* = 1;
 
@@ -31,12 +32,12 @@ pub fn init_secondary() void {
 
 pub fn acknowledge() u32 {
 
-    return cpu_interrupt_ack.* & 0x3FF;
+    return cpu_interrupt_ack.* & 0x3FF; // Mask to get only the interrupt ID (bits [9:0])
 
 }
 
 pub fn end_of_interrupt(interrupt_id: u32) void {
 
-    cpu_end_of_interrupt.* = interrupt_id;
+    cpu_end_of_interrupt.* = interrupt_id; // Writes the interrupt ID back to signal EOI
 
 }

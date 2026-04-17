@@ -330,9 +330,7 @@ fn sys_fork(saved_sp: usize, frame: *Frame) usize {
 
 }
 
-// execve(path, argv, envp) - replace current process image.
-// Copies argv strings into kernel memory before exec replaces the address space,
-// then places them on the new user stack. Sets x0=argc, x1=argv pointer.
+// execve(path, argv, envp) - copies argv into kernel memory before exec replaces the address space, then places it on the new user stack
 fn sys_execve(saved_sp: usize, frame: *Frame) usize {
 
     const MAX_ARGC = 16;
@@ -584,8 +582,7 @@ fn sys_dup2(frame: *Frame) u64 {
 
 }
 
-// listprogs(buf, size) -> bytes written.
-// Writes listed programs as category\0name\0description\0 triplets into buf.
+// listprogs(buf, size) -> bytes written. Writes category\0name\0description\0 triplets into buf.
 fn sys_listprogs(frame: *Frame) u64 {
 
     const buf: [*]u8 = @ptrFromInt(frame.x0);
@@ -618,8 +615,7 @@ fn sys_listprogs(frame: *Frame) u64 {
 
 }
 
-// getperms(name) -> permissions bitmask (0-15) or negative error.
-// Bitmask: bit0=can_read, bit1=can_write, bit2=can_exec, bit3=can_delete.
+// getperms(name) -> permissions bitmask 0-15 (bit0=read, bit1=write, bit2=exec, bit3=delete), or negative error
 fn sys_getperms(frame: *Frame) u64 {
 
     const name_ptr: [*:0]const u8 = @ptrFromInt(frame.x0);
@@ -639,8 +635,7 @@ fn sys_getperms(frame: *Frame) u64 {
 
 }
 
-// chmod(name, permissions_bitmask) -> 0 or negative error.
-// Bitmask: bit0=can_read, bit1=can_write, bit2=can_exec, bit3=can_delete.
+// chmod(name, permissions_bitmask) -> 0 or negative error. Same bitmask encoding as getperms.
 fn sys_chmod(frame: *Frame) u64 {
 
     const name_ptr: [*:0]const u8 = @ptrFromInt(frame.x0);
@@ -978,8 +973,7 @@ fn sys_search(frame: *Frame) u64 {
 
 }
 
-// pathctl(op, path_ptr) -> 0 or bytes written, or negative error.
-// op: 0=add, 1=remove, 2=list.
+// pathctl(op, path_ptr) -> 0 or bytes written, or negative error. op: 0=add, 1=remove, 2=list.
 fn sys_pathctl(frame: *Frame) u64 {
 
     const op = frame.x0;
