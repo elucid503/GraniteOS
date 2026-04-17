@@ -115,9 +115,9 @@ const VringLayout = extern struct {
     desc: [QUEUE_SIZE]VirtqDesc,
 
     avail: VirtqAvail,
-    used: VirtqUsed,
-
     _pad: [VRING_USED_ALIGN - VRING_DESC_AREA - VRING_AVAIL_AREA]u8,
+
+    used: VirtqUsed,
 
 };
 
