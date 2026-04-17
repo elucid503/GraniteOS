@@ -106,14 +106,6 @@ pub fn build(b: *std.Build) void {
 
     mem_mod.addImport("syscall", syscall_mod);
 
-    const wm_mod = b.createModule(.{
-
-        .root_source_file = b.path("user/lib/wm.zig"),
-
-    });
-
-    wm_mod.addImport("syscall", syscall_mod);
-
     for (entries.items) |entry| {
 
         const prog_mod = b.createModule(.{
@@ -128,7 +120,6 @@ pub fn build(b: *std.Build) void {
         prog_mod.addImport("syscall", syscall_mod);
         prog_mod.addImport("io", io_mod);
         prog_mod.addImport("mem", mem_mod);
-        prog_mod.addImport("wm", wm_mod);
 
         const user_prog = b.addExecutable(.{
 

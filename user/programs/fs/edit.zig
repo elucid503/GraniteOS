@@ -2,7 +2,6 @@
 
 const sys = @import("syscall");
 const io = @import("io");
-const wm = @import("wm");
 
 // Terminal layout (assumes 80x24 VT100-compatible terminal).
 
@@ -201,19 +200,19 @@ fn draw(filename: []const u8) void {
     if (rc.row < scroll_row) scroll_row = rc.row;
     if (rc.row >= scroll_row + CONTENT_ROWS) scroll_row = rc.row - CONTENT_ROWS + 1;
 
-    wm.buf_reset();
-    wm.buf_home(); // cursor to top-left without clearing
+    // Cursor to top-left without clearing
+    io.print("\x1B[H");
 
     // Header: "filename | N Bytes" then blank line.
 
-    wm.buf_str(filename);
-    wm.buf_str(" | ");
-    wm.buf_int(content_len);
-    wm.buf_str(" Bytes");
-    wm.buf_clear_eol();
-    wm.buf_str("\r\n");
-    wm.buf_clear_eol();
-    wm.buf_str("\r\n");
+    io.print(filename);
+    io.print(" | ");
+    io.print_int(content_len);
+    io.print(" Bytes");
+    io.print("\x1B[K");
+    io.print("\r\n");
+    io.print("\x1B[K");
+    io.print("\r\n");
 
     // Skip to scroll_row.
 
@@ -237,10 +236,10 @@ fn draw(filename: []const u8) void {
 
         while (pos < content_len and content[pos] != '\n') pos += 1;
 
-        if (pos > line_start) wm.buf_str(content[line_start..pos]);
+        if (pos > line_start) io.print(content[line_start..pos]);
 
-        wm.buf_clear_eol();
-        wm.buf_str("\r\n");
+        io.print("\x1B[K");
+        io.print("\r\n");
 
         if (pos < content_len) pos += 1; // step past '\n'
 
@@ -248,10 +247,10 @@ fn draw(filename: []const u8) void {
 
     // Footer.
 
-    wm.buf_clear_eol();
-    wm.buf_str("\r\n");
-    wm.buf_str("Exit (Alt+C) | Save (Alt+S)");
-    wm.buf_clear_eol();
+    io.print("\x1B[K");
+    io.print("\r\n");
+    io.print("Exit (Alt+C) | Save (Alt+S)");
+    io.print("\x1B[K");
 
     // Position cursor inside the content area.
     // Content starts at display row 3 (1-indexed): row 1 = header, row 2 = blank.
@@ -259,8 +258,11 @@ fn draw(filename: []const u8) void {
     const disp_row: usize = 3 + (if (rc.row >= scroll_row) rc.row - scroll_row else 0);
     const disp_col: usize = rc.col + 1;
 
-    wm.buf_move(disp_row, disp_col);
-    wm.flush();
+    io.print("\x1B[");
+    io.print_int(disp_row);
+    io.print(";");
+    io.print_int(disp_col);
+    io.print("H");
 
 }
 
