@@ -29,9 +29,10 @@ export fn _start() noreturn {
 
     io.print("  ");
     io.print_int(lines);
-    io.print(" lines, ");
+    io.print(if (lines == 1) " line, " else " lines, ");
     io.print_int(bytes);
-    io.println(" bytes");
+    io.print(if (bytes == 1) " byte" else " bytes");
+    io.println("");
 
     sys.exit(0);
 
