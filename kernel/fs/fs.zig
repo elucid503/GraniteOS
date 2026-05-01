@@ -1041,8 +1041,7 @@ pub fn flush_entry(slot: usize) void {
 
 }
 
-/// Wipe all user files and directories from the in-memory FS, then restore the default layout.
-/// Program entries are cleared and re-installed by populate_default_layout.
+/// Wipes all user files and directories from the in-memory FS, then restores the default layout. Program entries are cleared and re-installed by populate_default_layout.
 pub fn format_user_files() void {
 
     fs_lock.lock();

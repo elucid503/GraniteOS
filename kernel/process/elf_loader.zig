@@ -5,17 +5,20 @@ const page_table = @import("../memory/page_table.zig");
 
 const PAGE_SIZE: usize = 4096;
 
-const USER_STACK_PAGES: usize = 8;
-const USER_STACK_TOP: usize = 0x4FF0_0000; // 32KB stack immediately below 0x4FF00000, growing downward
+// User stack: 32KB immediately below 0x4FF00000, growing downward
 
-const ELF_MAGIC: u32 = 0x464C457F; // "\x7FELF" little-endian
-const ELFCLASS64: u8 = 2;
-const ELFDATA2LSB: u8 = 1;
+const USER_STACK_PAGES: usize = 8;
+const USER_STACK_TOP: usize = 0x4FF0_0000;
+
+const ELF_MAGIC: u32 = 0x464C457F; // 0x7F or 'E' 'L' 'F'
+const ELFCLASS64: u8  = 2;
+const ELFDATA2LSB: u8  = 1;
 const ET_EXEC: u16 = 2;
 const EM_AARCH64: u16 = 183;
 const PT_LOAD: u32 = 1;
 
 const ElfHeader = extern struct {
+
     e_ident_magic: u32,
     e_ident_class: u8,
     e_ident_data: u8,
@@ -35,23 +38,28 @@ const ElfHeader = extern struct {
     e_shentsize: u16,
     e_shnum: u16,
     e_shstrndx: u16,
+
 };
 
 const ProgramHeader = extern struct {
-    p_type: u32,
-    p_flags: u32,
+
+    p_type:   u32,
+    p_flags:  u32,
     p_offset: u64,
-    p_vaddr: u64,
-    p_paddr: u64,
+    p_vaddr:  u64,
+    p_paddr:  u64,
     p_filesz: u64,
-    p_memsz: u64,
-    p_align: u64,
+    p_memsz:  u64,
+    p_align:  u64,
+
 };
 
 pub const LoadResult = struct {
+
     entry_point: usize,
     stack_top: usize,
     initial_brk: usize, // first byte past the last loaded segment (page-aligned)
+
 };
 
 pub const LoadError = error{
@@ -63,19 +71,19 @@ pub const LoadError = error{
 
 };
 
-/// Validates the ELF, maps and copies segments, allocates the user stack. TTBR0_EL1 must already point to l0_pa.
+/// Validates the ELF, maps pages into l0_pa, copy segments, and then finally allocates user stack.
 pub fn load(elf_bytes: []const u8, l0_pa: usize) LoadError!LoadResult {
 
     if (elf_bytes.len < @sizeOf(ElfHeader)) return LoadError.BadMagic;
 
-    // align(1) avoids a runtime fault when embedded ELF bytes are not naturally aligned to ElfHeader's 8-byte alignment
+    // Use align(1) to avoid a runtime alignment fault when the embedded ELF bytes are not naturally aligned to ElfHeader's alignment (8 bytes for u64 fields).
     const hdr: *align(1) const ElfHeader = @ptrCast(elf_bytes.ptr);
 
     if (hdr.e_ident_magic != ELF_MAGIC) return LoadError.BadMagic;
     if (hdr.e_ident_class != ELFCLASS64) return LoadError.BadMagic;
     if (hdr.e_ident_data != ELFDATA2LSB) return LoadError.BadMagic;
     if (hdr.e_type != ET_EXEC) return LoadError.NotExecutable;
-    if (hdr.e_machine != EM_AARCH64) return LoadError.NotAArch64;
+    if (hdr.e_machine != EM_AARCH64)  return LoadError.NotAArch64;
 
     var max_loaded_addr: usize = 0;
 
@@ -101,7 +109,7 @@ pub fn load(elf_bytes: []const u8, l0_pa: usize) LoadError!LoadResult {
     return .{
 
         .entry_point = @intCast(hdr.e_entry),
-        .stack_top = USER_STACK_TOP,
+        .stack_top   = USER_STACK_TOP,
         .initial_brk = initial_brk,
 
     };
@@ -111,13 +119,13 @@ pub fn load(elf_bytes: []const u8, l0_pa: usize) LoadError!LoadResult {
 fn load_segment(elf_bytes: []const u8, ph: *align(1) const ProgramHeader, l0_pa: usize) LoadError!void {
 
     const va_start: usize = @intCast(ph.p_vaddr);
-    const va_end: usize = @intCast(ph.p_vaddr + ph.p_memsz);
+    const va_end:   usize = @intCast(ph.p_vaddr + ph.p_memsz);
 
     const page_start = va_start & ~@as(usize, PAGE_SIZE - 1);
-    const page_end = align_up(va_end, PAGE_SIZE);
+    const page_end   = align_up(va_end, PAGE_SIZE);
 
-    // Allocate and map physical pages for the segment. Skip already-mapped pages
-    // (multiple PT_LOAD entries can share a 4KB page, e.g. .text and .rodata).
+    // Allocate physical pages and map them at the segment's virtual addresses.
+
     var va = page_start;
 
     while (va < page_end) : (va += PAGE_SIZE) {
@@ -131,7 +139,11 @@ fn load_segment(elf_bytes: []const u8, ph: *align(1) const ProgramHeader, l0_pa:
 
     }
 
-    asm volatile ("isb" ::: .{ .memory = true }); // ensures new TLB entries are visible before we write
+    // ISB ensures the new TLB entries (from map_page DSB) are visible before we write.
+
+    asm volatile ("isb" ::: .{ .memory = true });
+
+    // Time to zero the full virtual extent, then copy file image in.
 
     const mem: [*]u8 = @ptrFromInt(va_start);
     @memset(mem[0..@intCast(ph.p_memsz)], 0);
@@ -145,12 +157,15 @@ fn load_segment(elf_bytes: []const u8, ph: *align(1) const ProgramHeader, l0_pa:
 
     }
 
-    // Clean D-cache to PoU so the I-cache sees the written code before first execution
+    // Cleans D-cache to Point of Unification so the I-cache sees the written code. Necessary to avoid stale instruction fetches after loading new code.
+
     const CACHE_LINE_SIZE: usize = 64;
     var cache_va = page_start;
 
     while (cache_va < page_end) : (cache_va += CACHE_LINE_SIZE) {
+
         asm volatile ("dc cvau, %[va]" :: [va] "r" (cache_va) : .{ .memory = true });
+
     }
 
     asm volatile ("dsb ish" ::: .{ .memory = true });
@@ -158,7 +173,9 @@ fn load_segment(elf_bytes: []const u8, ph: *align(1) const ProgramHeader, l0_pa:
     cache_va = page_start;
 
     while (cache_va < page_end) : (cache_va += CACHE_LINE_SIZE) {
+
         asm volatile ("ic ivau, %[va]" :: [va] "r" (cache_va) : .{ .memory = true });
+
     }
 
     asm volatile ("dsb ish" ::: .{ .memory = true });

@@ -5,8 +5,7 @@ const sys = @import("syscall");
 var heap_current: usize = 0;
 var heap_end: usize = 0;
 
-/// Allocate size bytes from the user heap (bump allocator over brk).
-/// Returns a pointer to the allocated region, or null on failure.
+/// Allocates size bytes from the user heap (bump allocator over brk). Returns a pointer to the allocated region, or null on failure.
 pub fn alloc(size: usize, alignment: usize) ?[*]u8 {
 
     if (heap_current == 0) {

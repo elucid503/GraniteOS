@@ -83,8 +83,7 @@ pub fn getpid() usize {
 
 }
 
-/// Adjust the process heap break. Pass 0 to query the current break.
-/// Returns the new (or current) break address.
+/// Adjusts the process heap break. Pass 0 to query; returns the new (or current) break address.
 pub fn brk(addr: usize) usize {
 
     return raw(.{ .nr = SYS_BRK, .x0 = addr });
@@ -126,8 +125,7 @@ pub fn create(name: [*:0]const u8) isize {
 
 }
 
-/// Open an existing file. flags: OPEN_READ=1, OPEN_WRITE=2, OPEN_READWRITE=3.
-/// Returns the fd (>= 3) on success, or a negative error code.
+/// Opens an existing file. flags: OPEN_READ=1, OPEN_WRITE=2, OPEN_READWRITE=3. Returns the fd (>= 3) on success, or a negative error code.
 pub fn open(name: [*:0]const u8, flags: usize) isize {
 
     return @bitCast(raw(.{
@@ -168,8 +166,7 @@ pub fn sigaction(sig: usize, handler: usize) isize {
 
 }
 
-/// Return from a signal handler. Restores the context from before signal delivery.
-/// Must be called at the end of every signal handler. Never returns.
+/// Returns from a signal handler, restoring context from before signal delivery. Must be called at the end of every handler.
 pub fn sigreturn() noreturn {
 
     _ = raw(.{ .nr = SYS_SIGRETURN });
@@ -177,8 +174,7 @@ pub fn sigreturn() noreturn {
 
 }
 
-/// Redirect stdin (new_fd=0) or stdout (new_fd=1) to a pipe fd.
-/// old_fd must be a pipe descriptor. Returns 0 on success.
+/// Redirects stdin (new_fd=0) or stdout (new_fd=1) to a pipe fd. old_fd must be a pipe descriptor. Returns 0 on success.
 pub fn dup2(old_fd: usize, new_fd: usize) isize {
 
     return @bitCast(raw(.{
@@ -191,8 +187,7 @@ pub fn dup2(old_fd: usize, new_fd: usize) isize {
 
 }
 
-/// List embedded program names. Writes null-separated names into buf.
-/// Returns total bytes written.
+/// Lists embedded program names into buf as null-separated names. Returns total bytes written.
 pub fn listprogs(buf: []u8) usize {
 
     return raw(.{
@@ -294,16 +289,14 @@ pub fn sysinfo(info_type: usize, buf: []u8) usize {
 
 }
 
-/// Wipe all user files from the in-memory FS and clear the persistent disk.
-/// The default directory layout is restored in memory. Returns 0 on success.
+/// Wipes all user files from the in-memory FS, clears the persistent disk, and restores the default directory layout. Returns 0 on success.
 pub fn diskformat() isize {
 
     return @bitCast(raw(.{ .nr = SYS_DISKFORMAT }));
 
 }
 
-/// Get current permissions of a file as a bitmask: bit0=read, bit1=write, bit2=exec, bit3=delete.
-/// Returns the bitmask (0-15) or a negative error code.
+/// Gets current permissions of a file as a bitmask: bit0=read, bit1=write, bit2=exec, bit3=delete. Returns the bitmask (0-15) or a negative error code.
 pub fn getperms(name: [*:0]const u8) isize {
 
     return @bitCast(raw(.{
@@ -328,8 +321,7 @@ pub fn chmod(name: [*:0]const u8, mask: usize) isize {
 
 }
 
-/// Search the filesystem. mode 0 = name substring, mode 1 = content substring.
-/// Returns bytes written into buf (null-separated paths).
+/// Searches the filesystem. mode 0 = name substring, mode 1 = content substring. Returns bytes written into buf (null-separated paths).
 pub fn search(buf: []u8, query: [*:0]const u8, mode: usize) usize {
 
     return raw(.{
@@ -344,8 +336,7 @@ pub fn search(buf: []u8, query: [*:0]const u8, mode: usize) usize {
 
 }
 
-/// Manage the binary search path. op: 0=add, 1=remove, 2=list.
-/// For add/remove: pass path as x1. For list: pass buf/size as x1/x2.
+/// Manages the binary search path. op: 0=add, 1=remove, 2=list. For add/remove: pass path as x1. For list: pass buf/size as x1/x2.
 pub fn pathctl(op: usize, arg0: usize, arg1: usize) isize {
 
     return @bitCast(raw(.{

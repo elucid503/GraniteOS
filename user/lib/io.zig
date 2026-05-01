@@ -90,8 +90,7 @@ pub fn read_char() u8 {
 
 }
 
-/// Read a line from stdin into buf (stops at \n or when buf is full).
-/// Returns the slice of buf that was filled (not including the newline).
+/// Reads a line from stdin into buf (stops at \n or when buf is full). Returns the slice that was filled, not including the newline.
 pub fn read_line(buf: []u8) []u8 {
 
     var pos: usize = 0;

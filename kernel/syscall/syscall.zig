@@ -68,8 +68,7 @@ const Frame = extern struct {
 
 };
 
-/// Called from boot/vectors.S _el0_sync. Dispatches based on x8 (syscall number).
-/// Returns the kernel SP to resume - unchanged normally, different only on exit/fork.
+/// Called from boot/vectors.S _el0_sync. Dispatches based on x8 (syscall number). Returns the kernel SP to resume — unchanged normally, different only on exit/fork.
 pub export fn handle_syscall(saved_sp: usize) usize {
 
     const frame: *Frame = @ptrFromInt(saved_sp);
@@ -118,9 +117,7 @@ pub export fn handle_syscall(saved_sp: usize) usize {
 
 }
 
-// read(fd, buf, count) -> bytes read, or negative error.
-// fd 0 reads from UART (or redirected pipe). fd >= 3 goes through the file system / pipe layer.
-// Pipe reads may block if the pipe is empty and writers exist.
+// read(fd, buf, count) -> bytes read or negative error. fd 0 reads from UART or redirected pipe; fd >= 3 goes through the FS/pipe layer. Pipe reads may block if the pipe is empty and writers exist.
 fn sys_read(saved_sp: usize, frame: *Frame) usize {
 
     // stdin: use pipe redirect if set, otherwise UART
@@ -213,8 +210,7 @@ fn sys_read(saved_sp: usize, frame: *Frame) usize {
 
 }
 
-// write(fd, buf, count) -> bytes written, or negative error.
-// fd 1/2 write to UART (or redirected pipe). fd >= 3 goes through file system / pipe layer.
+// write(fd, buf, count) -> bytes written or negative error. fd 1/2 write to UART or redirected pipe; fd >= 3 goes through the FS/pipe layer.
 fn sys_write(frame: *Frame) u64 {
 
     // stdout: use pipe redirect if set, otherwise UART
@@ -416,11 +412,11 @@ fn sys_execve(saved_sp: usize, frame: *Frame) usize {
     const new_frame: *Frame = @ptrFromInt(saved_sp);
     @memset(@as([*]u8, @ptrFromInt(saved_sp))[0..@sizeOf(Frame)], 0);
 
-    new_frame.elr    = result.entry_point;
-    new_frame.spsr   = 0x0; // SPSR_EL0T
+    new_frame.elr = result.entry_point;
+    new_frame.spsr = 0x0; // SPSR_EL0T
     new_frame.sp_el0 = sp & ~@as(u64, 15);
-    new_frame.x0     = argc;
-    new_frame.x1     = if (argc > 0) sp else 0;
+    new_frame.x0 = argc;
+    new_frame.x1 = if (argc > 0) sp else 0;
 
     return saved_sp;
 
@@ -479,8 +475,7 @@ fn sys_create(frame: *Frame) u64 {
 
 }
 
-// open(name, flags) -> fd or negative error.
-// flags: bit 0 = read, bit 1 = write.
+// open(name, flags) -> fd or negative error. flags: bit 0 = read, bit 1 = write.
 fn sys_open(frame: *Frame) u64 {
 
     const name_ptr: [*:0]const u8 = @ptrFromInt(frame.x0);
@@ -681,8 +676,7 @@ fn sys_rename(frame: *Frame) u64 {
 
 }
 
-// listfiles(buf, size, path?) -> bytes written. path null (x2=0) lists cwd.
-// Writes name\0'f'|'d'\0size_string\0 per entry.
+// listfiles(buf, size, path?) -> bytes written. path null (x2=0) lists cwd. Writes name\0'f'|'d'\0size_string\0 per entry.
 fn sys_listfiles(frame: *Frame) u64 {
 
     const pcb = scheduler.current_process();
@@ -957,9 +951,7 @@ const BufWriter = struct {
 
 };
 
-// search(buf, size, query, mode) -> bytes written.
-// mode 0 = name substring, mode 1 = content substring.
-// Writes null-separated absolute paths into buf.
+// search(buf, size, query, mode) -> bytes written. mode 0 = name substring, mode 1 = content substring. Writes null-separated absolute paths into buf.
 fn sys_search(frame: *Frame) u64 {
 
     const buf: [*]u8 = @ptrFromInt(frame.x0);
