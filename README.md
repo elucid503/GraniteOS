@@ -325,8 +325,7 @@ signal_test # Verify signal delivery
 
 ### Known Limitations
 
-- Single core only. Big limitation.
-- No virtual disk; file system is RAM-only
+- Fixed file size limit (4KB) and max file count (64)
 - Limited memory protection beyond page-level
 - There is no preemption of kernel mode (kernel is not preemptible)
 - Per-process signals are a basic implementation (with only essential ones)
