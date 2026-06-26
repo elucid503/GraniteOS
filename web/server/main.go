@@ -10,7 +10,7 @@ import (
 func main() {
 
 	static := flag.String("static", "../frontend/dist", "built frontend directory")
-	port := flag.String("port", "8080", "TCP port")
+	port := flag.String("port", "8050", "TCP port")
 
 	flag.Parse()
 
