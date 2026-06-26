@@ -1,3 +1,5 @@
+import { loadDisk, saveDisk } from './diskStore'
+
 /** Emscripten Module shape used by QEMU Wasm. */
 export interface QemuModule {
 
@@ -14,6 +16,10 @@ export interface QemuModule {
 
   FS_createPath?: (parent: string, path: string, canRead: boolean, canWrite: boolean) => void
   FS_createDataFile?: (parent: string, name: string | null, data: Uint8Array, canRead: boolean, canWrite: boolean, canOwn: boolean) => void
+
+  FS?: {
+    readFile: (path: string, opts?: { encoding?: string }) => Uint8Array
+  }
 
   PThread?: { terminateAllThreads: () => void }
 
@@ -65,7 +71,7 @@ async function fetchAsset(url: string, label: string): Promise<ArrayBuffer> {
 
 }
 
-function preloadAssets(module: QemuModule, kernel: ArrayBuffer, disk: ArrayBuffer) {
+function preloadAssets(module: QemuModule, kernel: ArrayBuffer, disk: Uint8Array) {
 
   const orig = module.preRun ?? []
 
@@ -73,7 +79,7 @@ function preloadAssets(module: QemuModule, kernel: ArrayBuffer, disk: ArrayBuffe
 
     module.FS_createPath?.('/', 'pack', true, true)
     module.FS_createDataFile?.('/pack', 'kernel', new Uint8Array(kernel), true, true, true)
-    module.FS_createDataFile?.('/pack', 'disk.img', new Uint8Array(disk), true, true, true)
+    module.FS_createDataFile?.('/pack', 'disk.img', disk, true, true, true)
 
   }]
 
@@ -101,10 +107,40 @@ function patchTtyPoll(module: QemuModule) {
 
 }
 
-/*Tear down QEMU Wasm workers when the terminal unmounts. */
-export function stopQemu(module: QemuModule | null) {
+function readDiskFromFs(module: QemuModule): Uint8Array | null {
+
+  try {
+
+    return module.FS?.readFile('/pack/disk.img') ?? null
+
+  } catch {
+
+    return null
+
+  }
+
+}
+
+/** Persist the current disk state to IndexedDB, then tear down QEMU Wasm workers. */
+export async function stopQemu(module: QemuModule | null): Promise<void> {
 
   if (!module) return
+
+  const disk = readDiskFromFs(module)
+
+  if (disk) {
+
+    try {
+
+      await saveDisk(disk)
+
+    } catch (err) {
+
+      console.warn('[qemu] failed to persist disk:', err)
+
+    }
+
+  }
 
   try {
 
@@ -125,12 +161,37 @@ export async function startQemu(pty: unknown, onProgress: (msg: string) => void)
 
   onProgress('Loading assets...')
 
-  const [kernel, disk] = await Promise.all([
+  const [kernel, cachedDisk] = await Promise.all([
 
     fetchAsset('/assets/kernel', 'kernel'),
-    fetchAsset('/assets/disk.img', 'disk image'),
+    loadDisk(),
 
   ])
+
+  let disk: Uint8Array
+
+  if (cachedDisk) {
+
+    onProgress('Restoring saved disk...')
+    disk = cachedDisk
+
+  } else {
+
+    onProgress('Downloading disk image...')
+    const raw = await fetchAsset('/assets/disk.img', 'disk image')
+    disk = new Uint8Array(raw)
+
+    try {
+
+      await saveDisk(disk)
+
+    } catch (err) {
+
+      console.warn('[qemu] failed to cache disk:', err)
+
+    }
+
+  }
 
   onProgress('Downloading QEMU emulator...')
 

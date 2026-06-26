@@ -132,11 +132,13 @@ export default function Terminal() {
 
       document.removeEventListener('visibilitychange', onHidden)
 
-      stopQemu(qemu)
-      ro.disconnect()
-      term.dispose()
+      stopQemu(qemu).finally(() => {
 
-      termRef.current = null
+        ro.disconnect()
+        term.dispose()
+        termRef.current = null
+
+      })
 
     }
 
