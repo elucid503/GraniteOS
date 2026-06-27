@@ -144,6 +144,6 @@ export default function Terminal() {
 
   }, [])
 
-  return <div ref={containerRef} className="w-full h-full p-3" />
+  return <div ref={containerRef} className="w-full p-3" style={{ height: '95%' }} />
 
 }
